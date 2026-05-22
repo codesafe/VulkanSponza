@@ -28,6 +28,63 @@ static std::vector<char> readFile(const std::string &filename)
     return buffer;
 }
 
+static Math::Vec4 multiply(const Math::Mat4 &matrix, const Math::Vec4 &value)
+{
+    return Math::Vec4(
+        matrix.m[0][0] * value.x + matrix.m[1][0] * value.y + matrix.m[2][0] * value.z + matrix.m[3][0] * value.w,
+        matrix.m[0][1] * value.x + matrix.m[1][1] * value.y + matrix.m[2][1] * value.z + matrix.m[3][1] * value.w,
+        matrix.m[0][2] * value.x + matrix.m[1][2] * value.y + matrix.m[2][2] * value.z + matrix.m[3][2] * value.w,
+        matrix.m[0][3] * value.x + matrix.m[1][3] * value.y + matrix.m[2][3] * value.z + matrix.m[3][3] * value.w);
+}
+
+static bool clipToPlane(Math::Vec4 &a, Math::Vec4 &b, float da, float db)
+{
+    if (da >= 0.0f && db >= 0.0f)
+    {
+        return true;
+    }
+
+    if (da < 0.0f && db < 0.0f)
+    {
+        return false;
+    }
+
+    float t = da / (da - db);
+    Math::Vec4 clipped(
+        a.x + (b.x - a.x) * t,
+        a.y + (b.y - a.y) * t,
+        a.z + (b.z - a.z) * t,
+        a.w + (b.w - a.w) * t);
+
+    if (da < 0.0f)
+    {
+        a = clipped;
+    }
+    else
+    {
+        b = clipped;
+    }
+
+    return true;
+}
+
+static bool clipLineToClipSpace(Math::Vec4 &a, Math::Vec4 &b)
+{
+    return clipToPlane(a, b, a.x + a.w, b.x + b.w) &&
+           clipToPlane(a, b, a.w - a.x, b.w - b.x) &&
+           clipToPlane(a, b, a.y + a.w, b.y + b.w) &&
+           clipToPlane(a, b, a.w - a.y, b.w - b.y) &&
+           clipToPlane(a, b, a.z, b.z) &&
+           clipToPlane(a, b, a.w - a.z, b.w - b.z);
+}
+
+static ImVec2 clipToScreen(const Math::Vec4 &clip, VkExtent2D extent)
+{
+    float ndcX = clip.x / clip.w;
+    float ndcY = clip.y / clip.w;
+    return ImVec2((ndcX * 0.5f + 0.5f) * extent.width, (ndcY * 0.5f + 0.5f) * extent.height);
+}
+
 static void transitionImageLayout(VulkanContext *context, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
 {
     VkCommandBuffer commandBuffer = VulkanUtils::BeginSingleTimeCommands(context);
@@ -133,6 +190,15 @@ DeferredRenderer::~DeferredRenderer()
 
         vkDestroyBuffer(device, m_lightBuffers[i], nullptr);
         vkFreeMemory(device, m_lightBuffersMemory[i], nullptr);
+
+        vkDestroyBuffer(device, m_hdrSettingsBuffers[i], nullptr);
+        vkFreeMemory(device, m_hdrSettingsBuffersMemory[i], nullptr);
+
+        for (size_t m = 0; m < m_materialSettingsBuffers[i].size(); m++)
+        {
+            vkDestroyBuffer(device, m_materialSettingsBuffers[i][m], nullptr);
+            vkFreeMemory(device, m_materialSettingsBuffersMemory[i][m], nullptr);
+        }
     }
 
     // 프레임버퍼 정리
@@ -144,6 +210,15 @@ DeferredRenderer::~DeferredRenderer()
     {
         vkDestroyFramebuffer(device, fb, nullptr);
     }
+    for (auto fb : m_imguiFramebuffers)
+    {
+        vkDestroyFramebuffer(device, fb, nullptr);
+    }
+    if (m_hdrFramebuffer != VK_NULL_HANDLE)
+    {
+        vkDestroyFramebuffer(device, m_hdrFramebuffer, nullptr);
+        m_hdrFramebuffer = VK_NULL_HANDLE;
+    }
     if (m_shadowFramebuffer != VK_NULL_HANDLE)
     {
         vkDestroyFramebuffer(device, m_shadowFramebuffer, nullptr);
@@ -154,12 +229,15 @@ DeferredRenderer::~DeferredRenderer()
     vkDestroyPipelineLayout(device, m_geometryPipelineLayout, nullptr);
     vkDestroyPipeline(device, m_compositionPipeline, nullptr);
     vkDestroyPipelineLayout(device, m_compositionPipelineLayout, nullptr);
+    vkDestroyPipeline(device, m_finalPipeline, nullptr);
+    vkDestroyPipelineLayout(device, m_finalPipelineLayout, nullptr);
     vkDestroyPipeline(device, m_shadowPipeline, nullptr);
     vkDestroyPipelineLayout(device, m_shadowPipelineLayout, nullptr);
 
     // 디스크립터 레이아웃과 풀 정리
     vkDestroyDescriptorSetLayout(device, m_geometryDescriptorSetLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, m_compositionDescriptorSetLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, m_finalDescriptorSetLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, m_shadowDescriptorSetLayout, nullptr);
     vkDestroyDescriptorPool(device, m_descriptorPool, nullptr);
 
@@ -184,6 +262,10 @@ DeferredRenderer::~DeferredRenderer()
     vkDestroyImage(device, m_depthImage, nullptr);
     vkFreeMemory(device, m_depthImageMemory, nullptr);
 
+    vkDestroyImageView(device, m_hdrColorImageView, nullptr);
+    vkDestroyImage(device, m_hdrColorImage, nullptr);
+    vkFreeMemory(device, m_hdrColorImageMemory, nullptr);
+
     // 섀도우 맵 정리
     vkDestroyImageView(device, m_shadowImageView, nullptr);
     vkDestroyImage(device, m_shadowImage, nullptr);
@@ -200,6 +282,8 @@ DeferredRenderer::~DeferredRenderer()
     // 렌더 패스 정리
     vkDestroyRenderPass(device, m_geometryPass, nullptr);
     vkDestroyRenderPass(device, m_compositionPass, nullptr);
+    vkDestroyRenderPass(device, m_finalPass, nullptr);
+    vkDestroyRenderPass(device, m_imguiPass, nullptr);
     vkDestroyRenderPass(device, m_shadowPass, nullptr);
 }
 
@@ -282,7 +366,7 @@ void DeferredRenderer::Init(Model *model, HWND hwnd, RenderConfig *config)
     init_info.MinImageCount = 2;
     init_info.ImageCount = static_cast<uint32_t>(m_swapchain->GetImages().size());
 
-    init_info.PipelineInfoMain.RenderPass = m_compositionPass;
+    init_info.PipelineInfoMain.RenderPass = m_imguiPass;
     init_info.PipelineInfoMain.Subpass = 0;
     init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -322,6 +406,12 @@ void DeferredRenderer::createGBuffer()
                              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depthImage, m_depthImageMemory);
     m_depthImageView = VulkanUtils::CreateImageView(m_context, m_depthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    VulkanUtils::CreateImage(m_context, extent.width, extent.height,
+                             VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_hdrColorImage, m_hdrColorImageMemory);
+    m_hdrColorImageView = VulkanUtils::CreateImageView(m_context, m_hdrColorImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -396,6 +486,20 @@ void DeferredRenderer::createFramebuffers()
         throw std::runtime_error("failed to create shadow framebuffer!");
     }
 
+    VkFramebufferCreateInfo hdrFbInfo{};
+    hdrFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    hdrFbInfo.renderPass = m_compositionPass;
+    hdrFbInfo.attachmentCount = 1;
+    hdrFbInfo.pAttachments = &m_hdrColorImageView;
+    hdrFbInfo.width = extent.width;
+    hdrFbInfo.height = extent.height;
+    hdrFbInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device, &hdrFbInfo, nullptr, &m_hdrFramebuffer) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create HDR framebuffer!");
+    }
+
     m_geometryFramebuffers.resize(swapchainImageCount);
     for (size_t i = 0; i < swapchainImageCount; i++)
     {
@@ -422,6 +526,7 @@ void DeferredRenderer::createFramebuffers()
     }
 
     m_compositionFramebuffers.resize(swapchainImageCount);
+    m_imguiFramebuffers.resize(swapchainImageCount);
     for (size_t i = 0; i < swapchainImageCount; i++)
     {
         VkImageView attachments[] = {
@@ -429,7 +534,7 @@ void DeferredRenderer::createFramebuffers()
 
         VkFramebufferCreateInfo fbInfo{};
         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = m_compositionPass;
+        fbInfo.renderPass = m_finalPass;
         fbInfo.attachmentCount = 1;
         fbInfo.pAttachments = attachments;
         fbInfo.width = extent.width;
@@ -439,6 +544,20 @@ void DeferredRenderer::createFramebuffers()
         if (vkCreateFramebuffer(device, &fbInfo, nullptr, &m_compositionFramebuffers[i]) != VK_SUCCESS)
         {
             throw std::runtime_error("failed to create composition framebuffer!");
+        }
+
+        VkFramebufferCreateInfo imguiFbInfo{};
+        imguiFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        imguiFbInfo.renderPass = m_imguiPass;
+        imguiFbInfo.attachmentCount = 1;
+        imguiFbInfo.pAttachments = attachments;
+        imguiFbInfo.width = extent.width;
+        imguiFbInfo.height = extent.height;
+        imguiFbInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device, &imguiFbInfo, nullptr, &m_imguiFramebuffers[i]) != VK_SUCCESS)
+        {
+            throw std::runtime_error("failed to create ImGui framebuffer!");
         }
     }
 }
@@ -582,14 +701,14 @@ void DeferredRenderer::createRenderPasses()
     }
 
     VkAttachmentDescription compColorAttachment{};
-    compColorAttachment.format = m_swapchain->GetImageFormat();
+    compColorAttachment.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     compColorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
     compColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     compColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     compColorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     compColorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     compColorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    compColorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    compColorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkAttachmentReference compColorAttachmentRef{};
     compColorAttachmentRef.attachment = 0;
@@ -613,9 +732,9 @@ void DeferredRenderer::createRenderPasses()
     compDependencies[1].srcSubpass = 0;
     compDependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     compDependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    compDependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    compDependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     compDependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    compDependencies[1].dstAccessMask = 0;
+    compDependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     compDependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     VkRenderPassCreateInfo compRenderPassInfo{};
@@ -630,6 +749,108 @@ void DeferredRenderer::createRenderPasses()
     if (vkCreateRenderPass(device, &compRenderPassInfo, nullptr, &m_compositionPass) != VK_SUCCESS)
     {
         throw std::runtime_error("failed to create composition render pass!");
+    }
+
+    VkAttachmentDescription finalColorAttachment{};
+    finalColorAttachment.format = m_swapchain->GetImageFormat();
+    finalColorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    finalColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    finalColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    finalColorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    finalColorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    finalColorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    finalColorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference finalColorAttachmentRef{};
+    finalColorAttachmentRef.attachment = 0;
+    finalColorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription finalSubpass{};
+    finalSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    finalSubpass.colorAttachmentCount = 1;
+    finalSubpass.pColorAttachments = &finalColorAttachmentRef;
+    finalSubpass.pDepthStencilAttachment = nullptr;
+
+    std::array<VkSubpassDependency, 2> finalDependencies{};
+    finalDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    finalDependencies[0].dstSubpass = 0;
+    finalDependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    finalDependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    finalDependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    finalDependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    finalDependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    finalDependencies[1].srcSubpass = 0;
+    finalDependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    finalDependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    finalDependencies[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    finalDependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    finalDependencies[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    finalDependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo finalRenderPassInfo{};
+    finalRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    finalRenderPassInfo.attachmentCount = 1;
+    finalRenderPassInfo.pAttachments = &finalColorAttachment;
+    finalRenderPassInfo.subpassCount = 1;
+    finalRenderPassInfo.pSubpasses = &finalSubpass;
+    finalRenderPassInfo.dependencyCount = static_cast<uint32_t>(finalDependencies.size());
+    finalRenderPassInfo.pDependencies = finalDependencies.data();
+
+    if (vkCreateRenderPass(device, &finalRenderPassInfo, nullptr, &m_finalPass) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create final render pass!");
+    }
+
+    VkAttachmentDescription imguiColorAttachment{};
+    imguiColorAttachment.format = m_swapchain->GetImageFormat();
+    imguiColorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    imguiColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    imguiColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    imguiColorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    imguiColorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    imguiColorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    imguiColorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference imguiColorAttachmentRef{};
+    imguiColorAttachmentRef.attachment = 0;
+    imguiColorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription imguiSubpass{};
+    imguiSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    imguiSubpass.colorAttachmentCount = 1;
+    imguiSubpass.pColorAttachments = &imguiColorAttachmentRef;
+    imguiSubpass.pDepthStencilAttachment = nullptr;
+
+    std::array<VkSubpassDependency, 2> imguiDependencies{};
+    imguiDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    imguiDependencies[0].dstSubpass = 0;
+    imguiDependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    imguiDependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    imguiDependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imguiDependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imguiDependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    imguiDependencies[1].srcSubpass = 0;
+    imguiDependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    imguiDependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    imguiDependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    imguiDependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imguiDependencies[1].dstAccessMask = 0;
+    imguiDependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo imguiRenderPassInfo{};
+    imguiRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    imguiRenderPassInfo.attachmentCount = 1;
+    imguiRenderPassInfo.pAttachments = &imguiColorAttachment;
+    imguiRenderPassInfo.subpassCount = 1;
+    imguiRenderPassInfo.pSubpasses = &imguiSubpass;
+    imguiRenderPassInfo.dependencyCount = static_cast<uint32_t>(imguiDependencies.size());
+    imguiRenderPassInfo.pDependencies = imguiDependencies.data();
+
+    if (vkCreateRenderPass(device, &imguiRenderPassInfo, nullptr, &m_imguiPass) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create ImGui render pass!");
     }
 }
 
@@ -672,7 +893,14 @@ void DeferredRenderer::createDescriptorSetLayouts()
     specularSamplerLayoutBinding.pImmutableSamplers = nullptr;
     specularSamplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 5> geomBindings = {uboLayoutBinding, diffuseSamplerLayoutBinding, normalSamplerLayoutBinding, alphaSamplerLayoutBinding, specularSamplerLayoutBinding};
+    VkDescriptorSetLayoutBinding materialSettingsLayoutBinding{};
+    materialSettingsLayoutBinding.binding = 5;
+    materialSettingsLayoutBinding.descriptorCount = 1;
+    materialSettingsLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    materialSettingsLayoutBinding.pImmutableSamplers = nullptr;
+    materialSettingsLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 6> geomBindings = {uboLayoutBinding, diffuseSamplerLayoutBinding, normalSamplerLayoutBinding, alphaSamplerLayoutBinding, specularSamplerLayoutBinding, materialSettingsLayoutBinding};
     VkDescriptorSetLayoutCreateInfo geomLayoutInfo{};
     geomLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     geomLayoutInfo.bindingCount = static_cast<uint32_t>(geomBindings.size());
@@ -740,6 +968,31 @@ void DeferredRenderer::createDescriptorSetLayouts()
     {
         throw std::runtime_error("failed to create composition descriptor set layout!");
     }
+
+    VkDescriptorSetLayoutBinding hdrSamplerBinding{};
+    hdrSamplerBinding.binding = 0;
+    hdrSamplerBinding.descriptorCount = 1;
+    hdrSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    hdrSamplerBinding.pImmutableSamplers = nullptr;
+    hdrSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding hdrSettingsBinding{};
+    hdrSettingsBinding.binding = 1;
+    hdrSettingsBinding.descriptorCount = 1;
+    hdrSettingsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    hdrSettingsBinding.pImmutableSamplers = nullptr;
+    hdrSettingsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 2> finalBindings = {hdrSamplerBinding, hdrSettingsBinding};
+    VkDescriptorSetLayoutCreateInfo finalLayoutInfo{};
+    finalLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    finalLayoutInfo.bindingCount = static_cast<uint32_t>(finalBindings.size());
+    finalLayoutInfo.pBindings = finalBindings.data();
+
+    if (vkCreateDescriptorSetLayout(device, &finalLayoutInfo, nullptr, &m_finalDescriptorSetLayout) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create final descriptor set layout!");
+    }
 }
 
 void DeferredRenderer::createPipelines()
@@ -761,6 +1014,8 @@ void DeferredRenderer::createPipelines()
     auto geomFragCode = readFile("shaders/geometry.frag.spv");
     auto compVertCode = readFile("shaders/composition.vert.spv");
     auto compFragCode = readFile("shaders/composition.frag.spv");
+    auto finalVertCode = readFile("shaders/final.vert.spv");
+    auto finalFragCode = readFile("shaders/final.frag.spv");
 
     VkShaderModule shadowVertModule = createShaderModule(shadowVertCode);
     VkShaderModule shadowFragModule = createShaderModule(shadowFragCode);
@@ -768,6 +1023,8 @@ void DeferredRenderer::createPipelines()
     VkShaderModule geomFragModule = createShaderModule(geomFragCode);
     VkShaderModule compVertModule = createShaderModule(compVertCode);
     VkShaderModule compFragModule = createShaderModule(compFragCode);
+    VkShaderModule finalVertModule = createShaderModule(finalVertCode);
+    VkShaderModule finalFragModule = createShaderModule(finalFragCode);
 
     VkPipelineShaderStageCreateInfo shadowVertStageInfo{};
     shadowVertStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1010,6 +1267,20 @@ void DeferredRenderer::createPipelines()
 
     VkPipelineShaderStageCreateInfo compStages[] = {compVertStageInfo, compFragStageInfo};
 
+    VkPipelineShaderStageCreateInfo finalVertStageInfo{};
+    finalVertStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    finalVertStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    finalVertStageInfo.module = finalVertModule;
+    finalVertStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo finalFragStageInfo{};
+    finalFragStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    finalFragStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    finalFragStageInfo.module = finalFragModule;
+    finalFragStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo finalStages[] = {finalVertStageInfo, finalFragStageInfo};
+
     VkPipelineVertexInputStateCreateInfo compVertexInputInfo{};
     compVertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     compVertexInputInfo.vertexBindingDescriptionCount = 0;
@@ -1093,28 +1364,69 @@ void DeferredRenderer::createPipelines()
         throw std::runtime_error("failed to create composition graphics pipeline!");
     }
 
+    VkPipelineLayoutCreateInfo finalPipelineLayoutInfo{};
+    finalPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    finalPipelineLayoutInfo.setLayoutCount = 1;
+    finalPipelineLayoutInfo.pSetLayouts = &m_finalDescriptorSetLayout;
+
+    if (vkCreatePipelineLayout(device, &finalPipelineLayoutInfo, nullptr, &m_finalPipelineLayout) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create final pipeline layout!");
+    }
+
+    VkGraphicsPipelineCreateInfo finalPipelineInfo = compPipelineInfo;
+    finalPipelineInfo.pStages = finalStages;
+    finalPipelineInfo.layout = m_finalPipelineLayout;
+    finalPipelineInfo.renderPass = m_finalPass;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &finalPipelineInfo, nullptr, &m_finalPipeline) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create final graphics pipeline!");
+    }
+
     vkDestroyShaderModule(device, shadowVertModule, nullptr);
     vkDestroyShaderModule(device, shadowFragModule, nullptr);
     vkDestroyShaderModule(device, geomVertModule, nullptr);
     vkDestroyShaderModule(device, geomFragModule, nullptr);
     vkDestroyShaderModule(device, compVertModule, nullptr);
     vkDestroyShaderModule(device, compFragModule, nullptr);
+    vkDestroyShaderModule(device, finalVertModule, nullptr);
+    vkDestroyShaderModule(device, finalFragModule, nullptr);
 }
 
 void DeferredRenderer::createUniformBuffers()
 {
     VkDeviceSize uboSize = sizeof(UniformBufferObject);
     VkDeviceSize lightSize = sizeof(LightBufferObject);
+    VkDeviceSize hdrSettingsSize = sizeof(HdrSettingsBufferObject);
+    VkDeviceSize materialSettingsSize = sizeof(MaterialSettingsBufferObject);
+    size_t materialCount = m_model ? m_model->GetMaterials().size() : 1;
+    if (materialCount == 0)
+    {
+        materialCount = 1;
+    }
 
     m_uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
     m_uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
     m_lightBuffers.resize(MAX_FRAMES_IN_FLIGHT);
     m_lightBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+    m_hdrSettingsBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+    m_hdrSettingsBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+    m_materialSettingsBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+    m_materialSettingsBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         VulkanUtils::CreateBuffer(m_context, uboSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_uniformBuffers[i], m_uniformBuffersMemory[i]);
         VulkanUtils::CreateBuffer(m_context, lightSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_lightBuffers[i], m_lightBuffersMemory[i]);
+        VulkanUtils::CreateBuffer(m_context, hdrSettingsSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_hdrSettingsBuffers[i], m_hdrSettingsBuffersMemory[i]);
+
+        m_materialSettingsBuffers[i].resize(materialCount);
+        m_materialSettingsBuffersMemory[i].resize(materialCount);
+        for (size_t m = 0; m < materialCount; m++)
+        {
+            VulkanUtils::CreateBuffer(m_context, materialSettingsSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, m_materialSettingsBuffers[i][m], m_materialSettingsBuffersMemory[i][m]);
+        }
     }
 }
 
@@ -1159,6 +1471,7 @@ void DeferredRenderer::createDescriptorSets()
         m_shadowDescriptorSets[i].resize(materialCount);
     }
     m_compositionDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+    m_finalDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
 
     // 지오메트리 디스크립터 세트 할당
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -1205,6 +1518,18 @@ void DeferredRenderer::createDescriptorSets()
         throw std::runtime_error("failed to allocate composition descriptor sets!");
     }
 
+    std::vector<VkDescriptorSetLayout> finalLayouts(MAX_FRAMES_IN_FLIGHT, m_finalDescriptorSetLayout);
+    VkDescriptorSetAllocateInfo finalAllocInfo{};
+    finalAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    finalAllocInfo.descriptorPool = m_descriptorPool;
+    finalAllocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+    finalAllocInfo.pSetLayouts = finalLayouts.data();
+
+    if (vkAllocateDescriptorSets(device, &finalAllocInfo, m_finalDescriptorSets.data()) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to allocate final descriptor sets!");
+    }
+
     // 디스크립터 세트 채우기
     const auto &modelMaterials = m_model ? m_model->GetMaterials() : std::vector<Material>();
 
@@ -1229,6 +1554,11 @@ void DeferredRenderer::createDescriptorSets()
 
             VkDescriptorImageInfo geomSpecularImageInfo{};
             geomSpecularImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorBufferInfo geomMaterialSettingsBufferInfo{};
+            geomMaterialSettingsBufferInfo.buffer = m_materialSettingsBuffers[i][m];
+            geomMaterialSettingsBufferInfo.offset = 0;
+            geomMaterialSettingsBufferInfo.range = sizeof(MaterialSettingsBufferObject);
+
             if (m < modelMaterials.size())
             {
                 geomDiffuseImageInfo.imageView = modelMaterials[m].diffuseImageView;
@@ -1252,7 +1582,7 @@ void DeferredRenderer::createDescriptorSets()
                 geomSpecularImageInfo.sampler = m_colorSampler;
             }
 
-            std::array<VkWriteDescriptorSet, 5> geomWrites{};
+            std::array<VkWriteDescriptorSet, 6> geomWrites{};
             geomWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             geomWrites[0].dstSet = m_geometryDescriptorSets[i][m];
             geomWrites[0].dstBinding = 0;
@@ -1292,6 +1622,14 @@ void DeferredRenderer::createDescriptorSets()
             geomWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             geomWrites[4].descriptorCount = 1;
             geomWrites[4].pImageInfo = &geomSpecularImageInfo;
+
+            geomWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            geomWrites[5].dstSet = m_geometryDescriptorSets[i][m];
+            geomWrites[5].dstBinding = 5;
+            geomWrites[5].dstArrayElement = 0;
+            geomWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            geomWrites[5].descriptorCount = 1;
+            geomWrites[5].pBufferInfo = &geomMaterialSettingsBufferInfo;
 
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(geomWrites.size()), geomWrites.data(), 0, nullptr);
         }
@@ -1396,6 +1734,35 @@ void DeferredRenderer::createDescriptorSets()
         compWrites[5].pBufferInfo = &compLightBufferInfo;
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(compWrites.size()), compWrites.data(), 0, nullptr);
+
+        VkDescriptorImageInfo hdrImageInfo{};
+        hdrImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        hdrImageInfo.imageView = m_hdrColorImageView;
+        hdrImageInfo.sampler = m_colorSampler;
+
+        VkDescriptorBufferInfo hdrSettingsBufferInfo{};
+        hdrSettingsBufferInfo.buffer = m_hdrSettingsBuffers[i];
+        hdrSettingsBufferInfo.offset = 0;
+        hdrSettingsBufferInfo.range = sizeof(HdrSettingsBufferObject);
+
+        std::array<VkWriteDescriptorSet, 2> finalWrites{};
+        finalWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        finalWrites[0].dstSet = m_finalDescriptorSets[i];
+        finalWrites[0].dstBinding = 0;
+        finalWrites[0].dstArrayElement = 0;
+        finalWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        finalWrites[0].descriptorCount = 1;
+        finalWrites[0].pImageInfo = &hdrImageInfo;
+
+        finalWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        finalWrites[1].dstSet = m_finalDescriptorSets[i];
+        finalWrites[1].dstBinding = 1;
+        finalWrites[1].dstArrayElement = 0;
+        finalWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        finalWrites[1].descriptorCount = 1;
+        finalWrites[1].pBufferInfo = &hdrSettingsBufferInfo;
+
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(finalWrites.size()), finalWrites.data(), 0, nullptr);
     }
 }
 
@@ -1453,6 +1820,15 @@ void DeferredRenderer::Recreate()
     {
         vkDestroyFramebuffer(device, fb, nullptr);
     }
+    for (auto fb : m_imguiFramebuffers)
+    {
+        vkDestroyFramebuffer(device, fb, nullptr);
+    }
+    if (m_hdrFramebuffer != VK_NULL_HANDLE)
+    {
+        vkDestroyFramebuffer(device, m_hdrFramebuffer, nullptr);
+        m_hdrFramebuffer = VK_NULL_HANDLE;
+    }
 
     vkDestroyImageView(device, m_positionImageView, nullptr);
     vkDestroyImage(device, m_positionImage, nullptr);
@@ -1473,6 +1849,10 @@ void DeferredRenderer::Recreate()
     vkDestroyImageView(device, m_depthImageView, nullptr);
     vkDestroyImage(device, m_depthImage, nullptr);
     vkFreeMemory(device, m_depthImageMemory, nullptr);
+
+    vkDestroyImageView(device, m_hdrColorImageView, nullptr);
+    vkDestroyImage(device, m_hdrColorImage, nullptr);
+    vkFreeMemory(device, m_hdrColorImageMemory, nullptr);
 
     createGBuffer();
     createFramebuffers();
@@ -1513,6 +1893,22 @@ void DeferredRenderer::Recreate()
         }
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(compWrites.size()), compWrites.data(), 0, nullptr);
+
+        VkDescriptorImageInfo hdrImageInfo{};
+        hdrImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        hdrImageInfo.imageView = m_hdrColorImageView;
+        hdrImageInfo.sampler = m_colorSampler;
+
+        VkWriteDescriptorSet finalWrite{};
+        finalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        finalWrite.dstSet = m_finalDescriptorSets[i];
+        finalWrite.dstBinding = 0;
+        finalWrite.dstArrayElement = 0;
+        finalWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        finalWrite.descriptorCount = 1;
+        finalWrite.pImageInfo = &hdrImageInfo;
+
+        vkUpdateDescriptorSets(device, 1, &finalWrite, 0, nullptr);
     }
 }
 
@@ -1658,6 +2054,15 @@ void DeferredRenderer::DrawFrame(Camera *camera)
             ImGui::SliderFloat("Ambient Intensity", &m_config->ambientStrength, 0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("Specular Intensity", &m_config->specularStrength, 0.0f, 2.0f, "%.2f");
             ImGui::SliderFloat("Specular Power", &m_config->specularPower, 1.0f, 256.0f, "%.1f");
+
+            ImGui::Dummy(ImVec2(0.0f, 5.0f));
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0.0f, 5.0f));
+            ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "HDR Parameters");
+            ImGui::SliderFloat("Exposure", &m_config->hdrExposure, 0.1f, 5.0f, "%.2f");
+            ImGui::SliderFloat("Bloom Strength", &m_config->bloomStrength, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Bloom Threshold", &m_config->bloomThreshold, 0.1f, 10.0f, "%.2f");
+            ImGui::SliderFloat("Bloom Soft Knee", &m_config->bloomSoftKnee, 0.0f, 5.0f, "%.2f");
         }
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
@@ -1684,6 +2089,153 @@ void DeferredRenderer::DrawFrame(Camera *camera)
         ImGui::PopStyleVar(2);
 
         ImGui::End();
+    }
+
+    // 렌더 목록과 선택된 재질 편집 UI
+    {
+        ImGui::SetNextWindowPos(ImVec2(390, 10), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Render Object Properties", nullptr, ImGuiWindowFlags_NoCollapse);
+
+        if (m_model)
+        {
+            const auto &subMeshes = m_model->GetSubMeshes();
+            auto &materials = m_model->GetMaterials();
+
+            if (!subMeshes.empty())
+            {
+                if (m_selectedSubMesh < 0 || m_selectedSubMesh >= static_cast<int>(subMeshes.size()))
+                {
+                    m_selectedSubMesh = 0;
+                }
+
+                ImGui::TextColored(ImVec4(0.2f, 0.8f, 1.0f, 1.0f), "Render List");
+                if (ImGui::BeginListBox("##RenderList", ImVec2(-1.0f, 190.0f)))
+                {
+                    for (int i = 0; i < static_cast<int>(subMeshes.size()); i++)
+                    {
+                        const SubMesh &subMesh = subMeshes[i];
+                        int matIdx = subMesh.materialIndex;
+                        const char *materialName = "Invalid Material";
+                        if (matIdx >= 0 && matIdx < static_cast<int>(materials.size()))
+                        {
+                            materialName = materials[matIdx].name.c_str();
+                        }
+
+                        std::string label = std::to_string(i) + ": ";
+                        label += subMesh.name.empty() ? "SubMesh" : subMesh.name;
+                        label += " / ";
+                        label += materialName;
+
+                        if (ImGui::Selectable(label.c_str(), m_selectedSubMesh == i))
+                        {
+                            m_selectedSubMesh = i;
+                        }
+                    }
+                    ImGui::EndListBox();
+                }
+
+                const SubMesh &selected = subMeshes[m_selectedSubMesh];
+                int matIdx = selected.materialIndex;
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Selected Object");
+                ImGui::Text("SubMesh: %s", selected.name.empty() ? "(unnamed)" : selected.name.c_str());
+                ImGui::Text("Index Start: %u", selected.indexStart);
+                ImGui::Text("Index Count: %u", selected.indexCount);
+                ImGui::Text("Material Index: %d", matIdx);
+
+                if (matIdx >= 0 && matIdx < static_cast<int>(materials.size()))
+                {
+                    Material &material = materials[matIdx];
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "Material Properties");
+                    ImGui::Text("Name: %s", material.name.c_str());
+
+                    float tint[3] = {material.colorTint.x, material.colorTint.y, material.colorTint.z};
+                    if (ImGui::ColorEdit3("Color Tint", tint))
+                    {
+                        material.colorTint.x = tint[0];
+                        material.colorTint.y = tint[1];
+                        material.colorTint.z = tint[2];
+                    }
+
+                    ImGui::SliderFloat("Material HDR", &material.hdrIntensity, 0.0f, 20.0f, "%.2f");
+
+                    if (ImGui::Button("Reset Material Color/HDR", ImVec2(-1.0f, 0.0f)))
+                    {
+                        material.colorTint = Math::Vec3(1.0f, 1.0f, 1.0f);
+                        material.hdrIntensity = 1.0f;
+                    }
+
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Textures");
+                    ImGui::TextWrapped("Diffuse: %s", material.diffuseTexturePath.empty() ? "(fallback)" : material.diffuseTexturePath.c_str());
+                    ImGui::TextWrapped("Normal: %s", material.normalTexturePath.empty() ? "(fallback)" : material.normalTexturePath.c_str());
+                    ImGui::TextWrapped("Alpha: %s", material.alphaTexturePath.empty() ? "(fallback)" : material.alphaTexturePath.c_str());
+                    ImGui::TextWrapped("Specular: %s", material.specularTexturePath.empty() ? "(fallback)" : material.specularTexturePath.c_str());
+                }
+                else
+                {
+                    ImGui::TextDisabled("No editable material is bound to this SubMesh.");
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No renderable SubMesh was loaded.");
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("No model is loaded.");
+        }
+
+        ImGui::End();
+    }
+
+    if (m_model)
+    {
+        const auto &subMeshes = m_model->GetSubMeshes();
+        if (m_selectedSubMesh >= 0 && m_selectedSubMesh < static_cast<int>(subMeshes.size()))
+        {
+            const SubMesh &selected = subMeshes[m_selectedSubMesh];
+            Math::Vec3 min = selected.boundsMin;
+            Math::Vec3 max = selected.boundsMax;
+            std::array<Math::Vec3, 8> corners = {
+                Math::Vec3(min.x, min.y, min.z),
+                Math::Vec3(max.x, min.y, min.z),
+                Math::Vec3(max.x, max.y, min.z),
+                Math::Vec3(min.x, max.y, min.z),
+                Math::Vec3(min.x, min.y, max.z),
+                Math::Vec3(max.x, min.y, max.z),
+                Math::Vec3(max.x, max.y, max.z),
+                Math::Vec3(min.x, max.y, max.z)};
+
+            VkExtent2D extent = m_swapchain->GetExtent();
+            float aspect = (float)extent.width / (float)extent.height;
+            Math::Mat4 viewProjection = camera->GetProjectionMatrix(aspect) * camera->GetViewMatrix();
+            std::array<Math::Vec4, 8> clipCorners{};
+            for (size_t i = 0; i < corners.size(); i++)
+            {
+                clipCorners[i] = multiply(viewProjection, Math::Vec4(corners[i].x, corners[i].y, corners[i].z, 1.0f));
+            }
+
+            static const std::array<std::array<int, 2>, 12> edges = {{
+                {{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 0}},
+                {{4, 5}}, {{5, 6}}, {{6, 7}}, {{7, 4}},
+                {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}}};
+
+            ImDrawList *drawList = ImGui::GetBackgroundDrawList();
+            ImU32 green = IM_COL32(0, 255, 0, 255);
+            for (const auto &edge : edges)
+            {
+                Math::Vec4 a = clipCorners[edge[0]];
+                Math::Vec4 b = clipCorners[edge[1]];
+                if (clipLineToClipSpace(a, b))
+                {
+                    drawList->AddLine(clipToScreen(a, extent), clipToScreen(b, extent), green, 2.0f);
+                }
+            }
+        }
     }
 
     ImGui::Render();
@@ -1804,6 +2356,39 @@ void DeferredRenderer::updateUniformBuffer(uint32_t currentImage, Camera *camera
     vkMapMemory(device, m_lightBuffersMemory[currentImage], 0, sizeof(lbo), 0, &data);
     memcpy(data, &lbo, sizeof(lbo));
     vkUnmapMemory(device, m_lightBuffersMemory[currentImage]);
+
+    HdrSettingsBufferObject hdrSettings{};
+    hdrSettings.params = Math::Vec4(1.0f, 0.35f, 1.0f, 1.0f);
+
+    if (m_config)
+    {
+        hdrSettings.params = Math::Vec4(m_config->hdrExposure, m_config->bloomStrength, m_config->bloomThreshold, m_config->bloomSoftKnee);
+    }
+
+    vkMapMemory(device, m_hdrSettingsBuffersMemory[currentImage], 0, sizeof(hdrSettings), 0, &data);
+    memcpy(data, &hdrSettings, sizeof(hdrSettings));
+    vkUnmapMemory(device, m_hdrSettingsBuffersMemory[currentImage]);
+
+    if (m_model && currentImage < m_materialSettingsBuffersMemory.size())
+    {
+        auto &materials = m_model->GetMaterials();
+        size_t materialCount = m_materialSettingsBuffersMemory[currentImage].size();
+        for (size_t i = 0; i < materialCount; i++)
+        {
+            MaterialSettingsBufferObject materialSettings{};
+            materialSettings.colorAndHdr = Math::Vec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+            if (i < materials.size())
+            {
+                const Material &material = materials[i];
+                materialSettings.colorAndHdr = Math::Vec4(material.colorTint.x, material.colorTint.y, material.colorTint.z, material.hdrIntensity);
+            }
+
+            vkMapMemory(device, m_materialSettingsBuffersMemory[currentImage][i], 0, sizeof(materialSettings), 0, &data);
+            memcpy(data, &materialSettings, sizeof(materialSettings));
+            vkUnmapMemory(device, m_materialSettingsBuffersMemory[currentImage][i]);
+        }
+    }
 }
 
 void DeferredRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Camera *camera)
@@ -1940,7 +2525,7 @@ void DeferredRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32
     VkRenderPassBeginInfo compPassInfo{};
     compPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     compPassInfo.renderPass = m_compositionPass;
-    compPassInfo.framebuffer = m_compositionFramebuffers[imageIndex];
+    compPassInfo.framebuffer = m_hdrFramebuffer;
     compPassInfo.renderArea.offset = {0, 0};
     compPassInfo.renderArea.extent = extent;
 
@@ -1949,28 +2534,67 @@ void DeferredRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32
     compPassInfo.clearValueCount = 1;
     compPassInfo.pClearValues = &compClearValue;
 
+    VkViewport compViewport{};
+    compViewport.x = 0.0f;
+    compViewport.y = 0.0f;
+    compViewport.width = (float)extent.width;
+    compViewport.height = (float)extent.height;
+    compViewport.minDepth = 0.0f;
+    compViewport.maxDepth = 1.0f;
+
+    VkRect2D compScissor{};
+    compScissor.offset = {0, 0};
+    compScissor.extent = extent;
+
     vkCmdBeginRenderPass(commandBuffer, &compPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositionPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositionPipelineLayout, 0, 1, &m_compositionDescriptorSets[m_currentFrame], 0, nullptr);
 
-        VkViewport compViewport{};
-        compViewport.x = 0.0f;
-        compViewport.y = 0.0f;
-        compViewport.width = (float)extent.width;
-        compViewport.height = (float)extent.height;
-        compViewport.minDepth = 0.0f;
-        compViewport.maxDepth = 1.0f;
         vkCmdSetViewport(commandBuffer, 0, 1, &compViewport);
 
-        VkRect2D compScissor{};
-        compScissor.offset = {0, 0};
-        compScissor.extent = extent;
         vkCmdSetScissor(commandBuffer, 0, 1, &compScissor);
 
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    }
+    vkCmdEndRenderPass(commandBuffer);
 
-        // ImGui 드로우 데이터 렌더링
+    VkRenderPassBeginInfo finalPassInfo{};
+    finalPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    finalPassInfo.renderPass = m_finalPass;
+    finalPassInfo.framebuffer = m_compositionFramebuffers[imageIndex];
+    finalPassInfo.renderArea.offset = {0, 0};
+    finalPassInfo.renderArea.extent = extent;
+
+    VkClearValue finalClearValue{};
+    finalClearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    finalPassInfo.clearValueCount = 1;
+    finalPassInfo.pClearValues = &finalClearValue;
+
+    vkCmdBeginRenderPass(commandBuffer, &finalPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalPipelineLayout, 0, 1, &m_finalDescriptorSets[m_currentFrame], 0, nullptr);
+
+        vkCmdSetViewport(commandBuffer, 0, 1, &compViewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &compScissor);
+
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    }
+    vkCmdEndRenderPass(commandBuffer);
+
+    VkRenderPassBeginInfo imguiPassInfo{};
+    imguiPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    imguiPassInfo.renderPass = m_imguiPass;
+    imguiPassInfo.framebuffer = m_imguiFramebuffers[imageIndex];
+    imguiPassInfo.renderArea.offset = {0, 0};
+    imguiPassInfo.renderArea.extent = extent;
+    imguiPassInfo.clearValueCount = 0;
+    imguiPassInfo.pClearValues = nullptr;
+
+    vkCmdBeginRenderPass(commandBuffer, &imguiPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    {
+        // UI는 3D 후처리 패스 밖에서 swapchain 위에 직접 렌더링한다.
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
     }
     vkCmdEndRenderPass(commandBuffer);

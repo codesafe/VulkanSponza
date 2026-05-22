@@ -10,6 +10,10 @@ layout(binding = 1) uniform sampler2D diffuseSampler;
 layout(binding = 2) uniform sampler2D normalSampler;
 layout(binding = 3) uniform sampler2D alphaSampler;
 layout(binding = 4) uniform sampler2D specularSampler;
+layout(binding = 5) uniform MaterialSettingsBufferObject
+{
+    vec4 colorAndHdr;
+} materialSettings;
 
 layout(location = 0) out vec4 outPosition;
 layout(location = 1) out vec4 outNormal;
@@ -32,6 +36,7 @@ void main()
 
     outPosition = vec4(fragPos, 1.0);
     outNormal = vec4(finalNormal, 1.0);
-    outAlbedo = texture(diffuseSampler, fragTexCoord);
+    vec4 baseColor = texture(diffuseSampler, fragTexCoord);
+    outAlbedo = vec4(baseColor.rgb * materialSettings.colorAndHdr.rgb * materialSettings.colorAndHdr.w, baseColor.a);
     outSpecular = texture(specularSampler, fragTexCoord);
 }

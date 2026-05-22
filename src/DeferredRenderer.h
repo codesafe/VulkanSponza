@@ -25,6 +25,16 @@ struct LightBufferObject
     Math::Mat4 lightSpaceMatrix;
 };
 
+struct HdrSettingsBufferObject
+{
+    Math::Vec4 params; // x = 노출, y = bloom 강도, z = bloom 임계값, w = bloom soft knee
+};
+
+struct MaterialSettingsBufferObject
+{
+    Math::Vec4 colorAndHdr; // rgb = 재질 색상 보정, w = HDR 강도
+};
+
 struct RenderConfig;
 
 class DeferredRenderer
@@ -59,6 +69,8 @@ class DeferredRenderer
 
     VkRenderPass m_geometryPass;
     VkRenderPass m_compositionPass;
+    VkRenderPass m_finalPass;
+    VkRenderPass m_imguiPass;
     VkRenderPass m_shadowPass;
 
     VkPipelineLayout m_geometryPipelineLayout;
@@ -66,6 +78,9 @@ class DeferredRenderer
 
     VkPipelineLayout m_compositionPipelineLayout;
     VkPipeline m_compositionPipeline;
+
+    VkPipelineLayout m_finalPipelineLayout;
+    VkPipeline m_finalPipeline;
 
     VkPipelineLayout m_shadowPipelineLayout;
     VkPipeline m_shadowPipeline;
@@ -91,6 +106,10 @@ class DeferredRenderer
     VkDeviceMemory m_depthImageMemory;
     VkImageView m_depthImageView;
 
+    VkImage m_hdrColorImage;
+    VkDeviceMemory m_hdrColorImageMemory;
+    VkImageView m_hdrColorImageView;
+
     // 섀도우 맵
     VkImage m_shadowImage;
     VkDeviceMemory m_shadowImageMemory;
@@ -104,15 +123,19 @@ class DeferredRenderer
 
     std::vector<VkFramebuffer> m_geometryFramebuffers;
     std::vector<VkFramebuffer> m_compositionFramebuffers;
+    std::vector<VkFramebuffer> m_imguiFramebuffers;
+    VkFramebuffer m_hdrFramebuffer;
     VkFramebuffer m_shadowFramebuffer;
 
     VkDescriptorSetLayout m_geometryDescriptorSetLayout;
     VkDescriptorSetLayout m_compositionDescriptorSetLayout;
+    VkDescriptorSetLayout m_finalDescriptorSetLayout;
     VkDescriptorSetLayout m_shadowDescriptorSetLayout;
 
     VkDescriptorPool m_descriptorPool;
     std::vector<std::vector<VkDescriptorSet>> m_geometryDescriptorSets;
     std::vector<VkDescriptorSet> m_compositionDescriptorSets;
+    std::vector<VkDescriptorSet> m_finalDescriptorSets;
     std::vector<std::vector<VkDescriptorSet>> m_shadowDescriptorSets;
 
     std::vector<VkBuffer> m_uniformBuffers;
@@ -120,6 +143,12 @@ class DeferredRenderer
 
     std::vector<VkBuffer> m_lightBuffers;
     std::vector<VkDeviceMemory> m_lightBuffersMemory;
+
+    std::vector<VkBuffer> m_hdrSettingsBuffers;
+    std::vector<VkDeviceMemory> m_hdrSettingsBuffersMemory;
+
+    std::vector<std::vector<VkBuffer>> m_materialSettingsBuffers;
+    std::vector<std::vector<VkDeviceMemory>> m_materialSettingsBuffersMemory;
 
     std::vector<VkCommandBuffer> m_commandBuffers;
 
@@ -129,6 +158,7 @@ class DeferredRenderer
 
     uint32_t m_currentFrame = 0;
     const int MAX_FRAMES_IN_FLIGHT = 2;
+    int m_selectedSubMesh = 0;
 
     HWND m_hwnd = NULL;
     RenderConfig *m_config = nullptr;

@@ -113,7 +113,9 @@ void Model::loadModel(const std::string &path)
     for (const auto &shape : shapes)
     {
         SubMesh subMesh{};
+        subMesh.name = shape.name;
         subMesh.indexStart = static_cast<uint32_t>(m_indices.size());
+        bool hasBounds = false;
 
         int matId = -1;
         if (!shape.mesh.material_ids.empty())
@@ -147,6 +149,22 @@ void Model::loadModel(const std::string &path)
 
             m_vertices.push_back(vertex);
             m_indices.push_back(static_cast<uint32_t>(m_indices.size()));
+
+            if (!hasBounds)
+            {
+                subMesh.boundsMin = vertex.pos;
+                subMesh.boundsMax = vertex.pos;
+                hasBounds = true;
+            }
+            else
+            {
+                subMesh.boundsMin.x = std::min(subMesh.boundsMin.x, vertex.pos.x);
+                subMesh.boundsMin.y = std::min(subMesh.boundsMin.y, vertex.pos.y);
+                subMesh.boundsMin.z = std::min(subMesh.boundsMin.z, vertex.pos.z);
+                subMesh.boundsMax.x = std::max(subMesh.boundsMax.x, vertex.pos.x);
+                subMesh.boundsMax.y = std::max(subMesh.boundsMax.y, vertex.pos.y);
+                subMesh.boundsMax.z = std::max(subMesh.boundsMax.z, vertex.pos.z);
+            }
         }
 
         subMesh.indexCount = static_cast<uint32_t>(m_indices.size()) - subMesh.indexStart;
@@ -313,6 +331,7 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
     for (size_t i = 0; i < materials.size(); i++)
     {
         const auto &mat = materials[i];
+        m_materials[i].name = mat.name.empty() ? ("Material " + std::to_string(i)) : mat.name;
         auto resolveTexturePath = [&](const std::string &textureName) -> std::string
         {
             if (textureName.empty())
@@ -405,6 +424,7 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
             {
                 loadTexture(texturePath, VK_FORMAT_R8G8B8A8_SRGB, m_materials[i].diffuseImage, m_materials[i].diffuseImageMemory);
                 m_materials[i].diffuseImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].diffuseImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+                m_materials[i].diffuseTexturePath = texturePath;
                 loaded = true;
                 std::cout << "Loaded material texture [" << i << "]: " << texturePath << std::endl;
             }
@@ -427,6 +447,7 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
             {
                 loadTexture(normalTexturePath, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].normalImage, m_materials[i].normalImageMemory);
                 m_materials[i].normalImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].normalImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                m_materials[i].normalTexturePath = normalTexturePath;
                 normalLoaded = true;
                 std::cout << "Loaded normal texture [" << i << "]: " << normalTexturePath << std::endl;
             }
@@ -449,6 +470,7 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
             {
                 loadTexture(alphaTexturePath, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].alphaImage, m_materials[i].alphaImageMemory);
                 m_materials[i].alphaImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].alphaImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                m_materials[i].alphaTexturePath = alphaTexturePath;
                 alphaLoaded = true;
                 std::cout << "Loaded alpha texture [" << i << "]: " << alphaTexturePath << std::endl;
             }
@@ -476,6 +498,7 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
             {
                 loadTexture(specularTexturePath, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].specularImage, m_materials[i].specularImageMemory);
                 m_materials[i].specularImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].specularImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                m_materials[i].specularTexturePath = specularTexturePath;
                 specularLoaded = true;
                 std::cout << "Loaded specular texture [" << i << "]: " << specularTexturePath << std::endl;
             }
@@ -494,6 +517,7 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
     if (m_materials.empty())
     {
         Material fallback{};
+        fallback.name = "Fallback Material";
         createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_SRGB, fallback.diffuseImage, fallback.diffuseImageMemory, fallback.diffuseImageView);
         createFallbackTexture(0xFFFF8080, VK_FORMAT_R8G8B8A8_UNORM, fallback.normalImage, fallback.normalImageMemory, fallback.normalImageView);
         createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_UNORM, fallback.alphaImage, fallback.alphaImageMemory, fallback.alphaImageView);

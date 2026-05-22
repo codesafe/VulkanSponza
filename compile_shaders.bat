@@ -7,6 +7,9 @@ set GLSLC="D:\private\vulkansdk\Bin\glslc.exe"
 %GLSLC% shaders\composition.vert -o shaders\composition.vert.spv
 %GLSLC% shaders\composition.frag -o shaders\composition.frag.spv
 
+%GLSLC% shaders\final.vert -o shaders\final.vert.spv
+%GLSLC% shaders\final.frag -o shaders\final.frag.spv
+
 %GLSLC% shaders\shadow.vert -o shaders\shadow.vert.spv
 %GLSLC% shaders\shadow.frag -o shaders\shadow.frag.spv
 

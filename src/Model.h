@@ -25,6 +25,13 @@ struct Vertex
 
 struct Material
 {
+    std::string name;
+    std::string diffuseTexturePath;
+    std::string normalTexturePath;
+    std::string alphaTexturePath;
+    std::string specularTexturePath;
+    Math::Vec3 colorTint = Math::Vec3(1.0f, 1.0f, 1.0f);
+    float hdrIntensity = 1.0f;
     VkImage diffuseImage;
     VkDeviceMemory diffuseImageMemory;
     VkImageView diffuseImageView;
@@ -41,9 +48,12 @@ struct Material
 
 struct SubMesh
 {
+    std::string name;
     uint32_t indexStart;
     uint32_t indexCount;
     int materialIndex;
+    Math::Vec3 boundsMin;
+    Math::Vec3 boundsMax;
 };
 
 class Model
@@ -67,6 +77,10 @@ class Model
         return m_subMeshes;
     }
     const std::vector<Material> &GetMaterials() const
+    {
+        return m_materials;
+    }
+    std::vector<Material> &GetMaterials()
     {
         return m_materials;
     }

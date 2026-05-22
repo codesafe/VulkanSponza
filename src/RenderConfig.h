@@ -19,6 +19,10 @@ struct RenderConfig
     float ambientStrength = 0.1f;
     float specularStrength = 0.5f;
     float specularPower = 32.0f;
+    float hdrExposure = 1.0f;
+    float bloomStrength = 0.35f;
+    float bloomThreshold = 1.0f;
+    float bloomSoftKnee = 1.0f;
 
     void Load(const std::string &path)
     {
@@ -75,6 +79,14 @@ struct RenderConfig
                         ss >> specularStrength;
                     else if (key == "light_specular_power")
                         ss >> specularPower;
+                    else if (key == "hdr_exposure")
+                        ss >> hdrExposure;
+                    else if (key == "bloom_strength")
+                        ss >> bloomStrength;
+                    else if (key == "bloom_threshold")
+                        ss >> bloomThreshold;
+                    else if (key == "bloom_soft_knee")
+                        ss >> bloomSoftKnee;
                 }
             }
         }
@@ -104,5 +116,9 @@ struct RenderConfig
         f << "light_ambient = " << ambientStrength << "\n";
         f << "light_specular_strength = " << specularStrength << "\n";
         f << "light_specular_power = " << specularPower << "\n";
+        f << "hdr_exposure = " << hdrExposure << "\n";
+        f << "bloom_strength = " << bloomStrength << "\n";
+        f << "bloom_threshold = " << bloomThreshold << "\n";
+        f << "bloom_soft_knee = " << bloomSoftKnee << "\n";
     }
 };
