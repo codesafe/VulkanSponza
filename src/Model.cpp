@@ -76,6 +76,12 @@ Model::~Model()
         vkDestroyImageView(m_context->GetDevice(), material.normalImageView, nullptr);
         vkDestroyImage(m_context->GetDevice(), material.normalImage, nullptr);
         vkFreeMemory(m_context->GetDevice(), material.normalImageMemory, nullptr);
+        vkDestroyImageView(m_context->GetDevice(), material.alphaImageView, nullptr);
+        vkDestroyImage(m_context->GetDevice(), material.alphaImage, nullptr);
+        vkFreeMemory(m_context->GetDevice(), material.alphaImageMemory, nullptr);
+        vkDestroyImageView(m_context->GetDevice(), material.specularImageView, nullptr);
+        vkDestroyImage(m_context->GetDevice(), material.specularImage, nullptr);
+        vkFreeMemory(m_context->GetDevice(), material.specularImageMemory, nullptr);
     }
 }
 
@@ -352,6 +358,45 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
             return texturePath;
         };
 
+        auto inferSpecularTexturePath = [&](const std::string &diffusePath) -> std::string
+        {
+            if (diffusePath.empty())
+            {
+                return "";
+            }
+
+            std::vector<std::string> candidates;
+            auto addReplacementCandidate = [&](const std::string &token)
+            {
+                size_t pos = diffusePath.rfind(token);
+                if (pos != std::string::npos)
+                {
+                    std::string candidate = diffusePath;
+                    candidate.replace(pos, token.size(), "_spec");
+                    candidates.push_back(candidate);
+                }
+            };
+
+            addReplacementCandidate("_diff");
+            addReplacementCandidate("_dif");
+
+            size_t extensionPos = diffusePath.find_last_of('.');
+            if (extensionPos != std::string::npos)
+            {
+                candidates.push_back(diffusePath.substr(0, extensionPos) + "_spec" + diffusePath.substr(extensionPos));
+            }
+
+            for (const auto &candidate : candidates)
+            {
+                if (std::filesystem::exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return "";
+        };
+
         bool loaded = false;
         std::string texturePath = resolveTexturePath(mat.diffuse_texname);
         if (!texturePath.empty())
@@ -395,6 +440,55 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
         {
             createFallbackTexture(0xFFFF8080, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].normalImage, m_materials[i].normalImageMemory, m_materials[i].normalImageView);
         }
+
+        bool alphaLoaded = false;
+        std::string alphaTexturePath = resolveTexturePath(mat.alpha_texname);
+        if (!alphaTexturePath.empty())
+        {
+            try
+            {
+                loadTexture(alphaTexturePath, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].alphaImage, m_materials[i].alphaImageMemory);
+                m_materials[i].alphaImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].alphaImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                alphaLoaded = true;
+                std::cout << "Loaded alpha texture [" << i << "]: " << alphaTexturePath << std::endl;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Failed to load alpha texture " << alphaTexturePath << ": " << e.what() << ". Using fallback opaque texture." << std::endl;
+            }
+        }
+
+        if (!alphaLoaded)
+        {
+            createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].alphaImage, m_materials[i].alphaImageMemory, m_materials[i].alphaImageView);
+        }
+
+        bool specularLoaded = false;
+        std::string specularTexturePath = resolveTexturePath(mat.specular_texname);
+        if (specularTexturePath.empty())
+        {
+            specularTexturePath = inferSpecularTexturePath(texturePath);
+        }
+
+        if (!specularTexturePath.empty())
+        {
+            try
+            {
+                loadTexture(specularTexturePath, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].specularImage, m_materials[i].specularImageMemory);
+                m_materials[i].specularImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].specularImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                specularLoaded = true;
+                std::cout << "Loaded specular texture [" << i << "]: " << specularTexturePath << std::endl;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Failed to load specular texture " << specularTexturePath << ": " << e.what() << ". Using fallback white specular texture." << std::endl;
+            }
+        }
+
+        if (!specularLoaded)
+        {
+            createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].specularImage, m_materials[i].specularImageMemory, m_materials[i].specularImageView);
+        }
     }
 
     if (m_materials.empty())
@@ -402,6 +496,8 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
         Material fallback{};
         createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_SRGB, fallback.diffuseImage, fallback.diffuseImageMemory, fallback.diffuseImageView);
         createFallbackTexture(0xFFFF8080, VK_FORMAT_R8G8B8A8_UNORM, fallback.normalImage, fallback.normalImageMemory, fallback.normalImageView);
+        createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_UNORM, fallback.alphaImage, fallback.alphaImageMemory, fallback.alphaImageView);
+        createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_UNORM, fallback.specularImage, fallback.specularImageMemory, fallback.specularImageView);
         m_materials.push_back(fallback);
     }
 }

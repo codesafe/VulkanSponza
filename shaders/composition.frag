@@ -6,8 +6,9 @@ layout(binding = 0) uniform sampler2D positionSampler;
 layout(binding = 1) uniform sampler2D normalSampler;
 layout(binding = 2) uniform sampler2D albedoSampler;
 layout(binding = 3) uniform sampler2D shadowMapSampler;
+layout(binding = 4) uniform sampler2D specularSampler;
 
-layout(binding = 4) uniform LightBufferObject
+layout(binding = 5) uniform LightBufferObject
 {
     vec4 lightDirAndAmbient;     // xyz = 조명 방향, w = 주변광 강도
     vec4 viewPosAndSpecular;     // xyz = 시점 위치, w = 정반사 강도
@@ -53,6 +54,7 @@ void main()
     vec3 fragPos = texture(positionSampler, fragTexCoord).xyz;
     vec3 normal = texture(normalSampler, fragTexCoord).xyz;
     vec3 albedo = texture(albedoSampler, fragTexCoord).rgb;
+    vec3 specularMap = texture(specularSampler, fragTexCoord).rgb;
 
     vec3 lightDirVec = light.lightDirAndAmbient.xyz;
     float ambientStrength = light.lightDirAndAmbient.w;
@@ -75,7 +77,7 @@ void main()
     vec3 viewDir = normalize(viewPosVec - fragPos);
     vec3 reflectDir = reflect(-lightDir, normal);
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), specularPower);
-    vec3 specular = lightColor * specularStrength * spec;
+    vec3 specular = lightColor * specularMap * specularStrength * spec;
 
     // 그림자
     vec4 fragPosLightSpace = light.lightSpaceMatrix * vec4(fragPos, 1.0);

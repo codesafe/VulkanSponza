@@ -79,6 +79,10 @@ class DeferredRenderer
     VkDeviceMemory m_albedoImageMemory;
     VkImageView m_albedoImageView;
 
+    VkImage m_specularImage;
+    VkDeviceMemory m_specularImageMemory;
+    VkImageView m_specularImageView;
+
     VkImage m_normalImage;
     VkDeviceMemory m_normalImageMemory;
     VkImageView m_normalImageView;
@@ -109,7 +113,7 @@ class DeferredRenderer
     VkDescriptorPool m_descriptorPool;
     std::vector<std::vector<VkDescriptorSet>> m_geometryDescriptorSets;
     std::vector<VkDescriptorSet> m_compositionDescriptorSets;
-    std::vector<VkDescriptorSet> m_shadowDescriptorSets;
+    std::vector<std::vector<VkDescriptorSet>> m_shadowDescriptorSets;
 
     std::vector<VkBuffer> m_uniformBuffers;
     std::vector<VkDeviceMemory> m_uniformBuffersMemory;

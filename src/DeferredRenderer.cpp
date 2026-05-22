@@ -176,6 +176,10 @@ DeferredRenderer::~DeferredRenderer()
     vkDestroyImage(device, m_albedoImage, nullptr);
     vkFreeMemory(device, m_albedoImageMemory, nullptr);
 
+    vkDestroyImageView(device, m_specularImageView, nullptr);
+    vkDestroyImage(device, m_specularImage, nullptr);
+    vkFreeMemory(device, m_specularImageMemory, nullptr);
+
     vkDestroyImageView(device, m_depthImageView, nullptr);
     vkDestroyImage(device, m_depthImage, nullptr);
     vkFreeMemory(device, m_depthImageMemory, nullptr);
@@ -308,6 +312,12 @@ void DeferredRenderer::createGBuffer()
     m_albedoImageView = VulkanUtils::CreateImageView(m_context, m_albedoImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
     VulkanUtils::CreateImage(m_context, extent.width, extent.height,
+                             VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_specularImage, m_specularImageMemory);
+    m_specularImageView = VulkanUtils::CreateImageView(m_context, m_specularImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VulkanUtils::CreateImage(m_context, extent.width, extent.height,
                              VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
                              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depthImage, m_depthImageMemory);
@@ -389,10 +399,11 @@ void DeferredRenderer::createFramebuffers()
     m_geometryFramebuffers.resize(swapchainImageCount);
     for (size_t i = 0; i < swapchainImageCount; i++)
     {
-        std::array<VkImageView, 4> attachments = {
+        std::array<VkImageView, 5> attachments = {
             m_positionImageView,
             m_normalImageView,
             m_albedoImageView,
+            m_specularImageView,
             m_depthImageView};
 
         VkFramebufferCreateInfo fbInfo{};
@@ -486,7 +497,7 @@ void DeferredRenderer::createRenderPasses()
         throw std::runtime_error("failed to create shadow render pass!");
     }
 
-    std::array<VkAttachmentDescription, 4> attachments{};
+    std::array<VkAttachmentDescription, 5> attachments{};
 
     attachments[0].format = VK_FORMAT_R16G16B16A16_SFLOAT;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -509,20 +520,28 @@ void DeferredRenderer::createRenderPasses()
     attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    attachments[3].format = VK_FORMAT_D32_SFLOAT;
+    attachments[3].format = VK_FORMAT_R8G8B8A8_UNORM;
     attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
     attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[3].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkAttachmentReference, 3> colorAttachmentRefs{};
+    attachments[4].format = VK_FORMAT_D32_SFLOAT;
+    attachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[4].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[4].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    std::array<VkAttachmentReference, 4> colorAttachmentRefs{};
     colorAttachmentRefs[0] = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     colorAttachmentRefs[1] = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     colorAttachmentRefs[2] = {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    colorAttachmentRefs[3] = {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
 
     VkAttachmentReference depthAttachmentRef{};
-    depthAttachmentRef.attachment = 3;
+    depthAttachmentRef.attachment = 4;
     depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass{};
@@ -639,7 +658,21 @@ void DeferredRenderer::createDescriptorSetLayouts()
     normalSamplerLayoutBinding.pImmutableSamplers = nullptr;
     normalSamplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 3> geomBindings = {uboLayoutBinding, diffuseSamplerLayoutBinding, normalSamplerLayoutBinding};
+    VkDescriptorSetLayoutBinding alphaSamplerLayoutBinding{};
+    alphaSamplerLayoutBinding.binding = 3;
+    alphaSamplerLayoutBinding.descriptorCount = 1;
+    alphaSamplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    alphaSamplerLayoutBinding.pImmutableSamplers = nullptr;
+    alphaSamplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding specularSamplerLayoutBinding{};
+    specularSamplerLayoutBinding.binding = 4;
+    specularSamplerLayoutBinding.descriptorCount = 1;
+    specularSamplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    specularSamplerLayoutBinding.pImmutableSamplers = nullptr;
+    specularSamplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 5> geomBindings = {uboLayoutBinding, diffuseSamplerLayoutBinding, normalSamplerLayoutBinding, alphaSamplerLayoutBinding, specularSamplerLayoutBinding};
     VkDescriptorSetLayoutCreateInfo geomLayoutInfo{};
     geomLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     geomLayoutInfo.bindingCount = static_cast<uint32_t>(geomBindings.size());
@@ -664,7 +697,14 @@ void DeferredRenderer::createDescriptorSetLayouts()
     shadowLightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     shadowLightBinding.pImmutableSamplers = nullptr;
 
-    std::array<VkDescriptorSetLayoutBinding, 2> shadowBindings = {shadowModelBinding, shadowLightBinding};
+    VkDescriptorSetLayoutBinding shadowAlphaBinding{};
+    shadowAlphaBinding.binding = 2;
+    shadowAlphaBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    shadowAlphaBinding.descriptorCount = 1;
+    shadowAlphaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    shadowAlphaBinding.pImmutableSamplers = nullptr;
+
+    std::array<VkDescriptorSetLayoutBinding, 3> shadowBindings = {shadowModelBinding, shadowLightBinding, shadowAlphaBinding};
     VkDescriptorSetLayoutCreateInfo shadowLayoutInfo{};
     shadowLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     shadowLayoutInfo.bindingCount = static_cast<uint32_t>(shadowBindings.size());
@@ -675,8 +715,8 @@ void DeferredRenderer::createDescriptorSetLayouts()
         throw std::runtime_error("failed to create shadow descriptor set layout!");
     }
 
-    std::array<VkDescriptorSetLayoutBinding, 5> compBindings{};
-    for (uint32_t i = 0; i < 4; i++)
+    std::array<VkDescriptorSetLayoutBinding, 6> compBindings{};
+    for (uint32_t i = 0; i < 5; i++)
     {
         compBindings[i].binding = i;
         compBindings[i].descriptorCount = 1;
@@ -685,11 +725,11 @@ void DeferredRenderer::createDescriptorSetLayouts()
         compBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
 
-    compBindings[4].binding = 4;
-    compBindings[4].descriptorCount = 1;
-    compBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    compBindings[4].pImmutableSamplers = nullptr;
-    compBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    compBindings[5].binding = 5;
+    compBindings[5].descriptorCount = 1;
+    compBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    compBindings[5].pImmutableSamplers = nullptr;
+    compBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo compLayoutInfo{};
     compLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -745,14 +785,16 @@ void DeferredRenderer::createPipelines()
 
     auto bindingDesc = Vertex::getBindingDescription();
     auto attribDescs = Vertex::getAttributeDescriptions();
-    VkVertexInputAttributeDescription shadowPositionAttribDesc = attribDescs[0];
+    std::array<VkVertexInputAttributeDescription, 2> shadowAttribDescs = {
+        attribDescs[0],
+        attribDescs[2]};
 
     VkPipelineVertexInputStateCreateInfo shadowVertexInputInfo{};
     shadowVertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     shadowVertexInputInfo.vertexBindingDescriptionCount = 1;
     shadowVertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
-    shadowVertexInputInfo.vertexAttributeDescriptionCount = 1;
-    shadowVertexInputInfo.pVertexAttributeDescriptions = &shadowPositionAttribDesc;
+    shadowVertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(shadowAttribDescs.size());
+    shadowVertexInputInfo.pVertexAttributeDescriptions = shadowAttribDescs.data();
 
     VkPipelineInputAssemblyStateCreateInfo shadowInputAssembly{};
     shadowInputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -910,8 +952,8 @@ void DeferredRenderer::createPipelines()
     geomDepthStencil.depthBoundsTestEnable = VK_FALSE;
     geomDepthStencil.stencilTestEnable = VK_FALSE;
 
-    std::array<VkPipelineColorBlendAttachmentState, 3> geomBlendAttachments{};
-    for (uint32_t i = 0; i < 3; i++)
+    std::array<VkPipelineColorBlendAttachmentState, 4> geomBlendAttachments{};
+    for (uint32_t i = 0; i < 4; i++)
     {
         geomBlendAttachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         geomBlendAttachments[i].blendEnable = VK_FALSE;
@@ -1112,6 +1154,10 @@ void DeferredRenderer::createDescriptorSets()
     }
 
     m_shadowDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        m_shadowDescriptorSets[i].resize(materialCount);
+    }
     m_compositionDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
 
     // 지오메트리 디스크립터 세트 할당
@@ -1131,16 +1177,19 @@ void DeferredRenderer::createDescriptorSets()
     }
 
     // 섀도우 디스크립터 세트 할당
-    std::vector<VkDescriptorSetLayout> shadowLayouts(MAX_FRAMES_IN_FLIGHT, m_shadowDescriptorSetLayout);
-    VkDescriptorSetAllocateInfo shadowAllocInfo{};
-    shadowAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    shadowAllocInfo.descriptorPool = m_descriptorPool;
-    shadowAllocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-    shadowAllocInfo.pSetLayouts = shadowLayouts.data();
-
-    if (vkAllocateDescriptorSets(device, &shadowAllocInfo, m_shadowDescriptorSets.data()) != VK_SUCCESS)
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        throw std::runtime_error("failed to allocate shadow descriptor sets!");
+        std::vector<VkDescriptorSetLayout> shadowLayouts(materialCount, m_shadowDescriptorSetLayout);
+        VkDescriptorSetAllocateInfo shadowAllocInfo{};
+        shadowAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        shadowAllocInfo.descriptorPool = m_descriptorPool;
+        shadowAllocInfo.descriptorSetCount = static_cast<uint32_t>(materialCount);
+        shadowAllocInfo.pSetLayouts = shadowLayouts.data();
+
+        if (vkAllocateDescriptorSets(device, &shadowAllocInfo, m_shadowDescriptorSets[i].data()) != VK_SUCCESS)
+        {
+            throw std::runtime_error("failed to allocate shadow descriptor sets!");
+        }
     }
 
     // 컴포지션 디스크립터 세트 할당
@@ -1174,12 +1223,22 @@ void DeferredRenderer::createDescriptorSets()
 
             VkDescriptorImageInfo geomNormalImageInfo{};
             geomNormalImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo geomAlphaImageInfo{};
+            geomAlphaImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo geomSpecularImageInfo{};
+            geomSpecularImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             if (m < modelMaterials.size())
             {
                 geomDiffuseImageInfo.imageView = modelMaterials[m].diffuseImageView;
                 geomDiffuseImageInfo.sampler = m_model->GetTextureSampler();
                 geomNormalImageInfo.imageView = modelMaterials[m].normalImageView;
                 geomNormalImageInfo.sampler = m_model->GetTextureSampler();
+                geomAlphaImageInfo.imageView = modelMaterials[m].alphaImageView;
+                geomAlphaImageInfo.sampler = m_model->GetTextureSampler();
+                geomSpecularImageInfo.imageView = modelMaterials[m].specularImageView;
+                geomSpecularImageInfo.sampler = m_model->GetTextureSampler();
             }
             else
             {
@@ -1187,9 +1246,13 @@ void DeferredRenderer::createDescriptorSets()
                 geomDiffuseImageInfo.sampler = m_colorSampler;
                 geomNormalImageInfo.imageView = m_defaultTextureImageView;
                 geomNormalImageInfo.sampler = m_colorSampler;
+                geomAlphaImageInfo.imageView = m_defaultTextureImageView;
+                geomAlphaImageInfo.sampler = m_colorSampler;
+                geomSpecularImageInfo.imageView = m_defaultTextureImageView;
+                geomSpecularImageInfo.sampler = m_colorSampler;
             }
 
-            std::array<VkWriteDescriptorSet, 3> geomWrites{};
+            std::array<VkWriteDescriptorSet, 5> geomWrites{};
             geomWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             geomWrites[0].dstSet = m_geometryDescriptorSets[i][m];
             geomWrites[0].dstBinding = 0;
@@ -1214,39 +1277,79 @@ void DeferredRenderer::createDescriptorSets()
             geomWrites[2].descriptorCount = 1;
             geomWrites[2].pImageInfo = &geomNormalImageInfo;
 
+            geomWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            geomWrites[3].dstSet = m_geometryDescriptorSets[i][m];
+            geomWrites[3].dstBinding = 3;
+            geomWrites[3].dstArrayElement = 0;
+            geomWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            geomWrites[3].descriptorCount = 1;
+            geomWrites[3].pImageInfo = &geomAlphaImageInfo;
+
+            geomWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            geomWrites[4].dstSet = m_geometryDescriptorSets[i][m];
+            geomWrites[4].dstBinding = 4;
+            geomWrites[4].dstArrayElement = 0;
+            geomWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            geomWrites[4].descriptorCount = 1;
+            geomWrites[4].pImageInfo = &geomSpecularImageInfo;
+
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(geomWrites.size()), geomWrites.data(), 0, nullptr);
         }
 
-        VkDescriptorBufferInfo shadowModelBufferInfo{};
-        shadowModelBufferInfo.buffer = m_uniformBuffers[i];
-        shadowModelBufferInfo.offset = 0;
-        shadowModelBufferInfo.range = sizeof(UniformBufferObject);
+        for (size_t m = 0; m < materialCount; m++)
+        {
+            VkDescriptorBufferInfo shadowModelBufferInfo{};
+            shadowModelBufferInfo.buffer = m_uniformBuffers[i];
+            shadowModelBufferInfo.offset = 0;
+            shadowModelBufferInfo.range = sizeof(UniformBufferObject);
 
-        VkDescriptorBufferInfo shadowLightBufferInfo{};
-        shadowLightBufferInfo.buffer = m_lightBuffers[i];
-        shadowLightBufferInfo.offset = 0;
-        shadowLightBufferInfo.range = sizeof(LightBufferObject);
+            VkDescriptorBufferInfo shadowLightBufferInfo{};
+            shadowLightBufferInfo.buffer = m_lightBuffers[i];
+            shadowLightBufferInfo.offset = 0;
+            shadowLightBufferInfo.range = sizeof(LightBufferObject);
 
-        std::array<VkWriteDescriptorSet, 2> shadowWrites{};
-        shadowWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowWrites[0].dstSet = m_shadowDescriptorSets[i];
-        shadowWrites[0].dstBinding = 0;
-        shadowWrites[0].dstArrayElement = 0;
-        shadowWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        shadowWrites[0].descriptorCount = 1;
-        shadowWrites[0].pBufferInfo = &shadowModelBufferInfo;
+            VkDescriptorImageInfo shadowAlphaImageInfo{};
+            shadowAlphaImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            if (m < modelMaterials.size())
+            {
+                shadowAlphaImageInfo.imageView = modelMaterials[m].alphaImageView;
+                shadowAlphaImageInfo.sampler = m_model->GetTextureSampler();
+            }
+            else
+            {
+                shadowAlphaImageInfo.imageView = m_defaultTextureImageView;
+                shadowAlphaImageInfo.sampler = m_colorSampler;
+            }
 
-        shadowWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowWrites[1].dstSet = m_shadowDescriptorSets[i];
-        shadowWrites[1].dstBinding = 1;
-        shadowWrites[1].dstArrayElement = 0;
-        shadowWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        shadowWrites[1].descriptorCount = 1;
-        shadowWrites[1].pBufferInfo = &shadowLightBufferInfo;
+            std::array<VkWriteDescriptorSet, 3> shadowWrites{};
+            shadowWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            shadowWrites[0].dstSet = m_shadowDescriptorSets[i][m];
+            shadowWrites[0].dstBinding = 0;
+            shadowWrites[0].dstArrayElement = 0;
+            shadowWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            shadowWrites[0].descriptorCount = 1;
+            shadowWrites[0].pBufferInfo = &shadowModelBufferInfo;
 
-        vkUpdateDescriptorSets(device, static_cast<uint32_t>(shadowWrites.size()), shadowWrites.data(), 0, nullptr);
+            shadowWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            shadowWrites[1].dstSet = m_shadowDescriptorSets[i][m];
+            shadowWrites[1].dstBinding = 1;
+            shadowWrites[1].dstArrayElement = 0;
+            shadowWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            shadowWrites[1].descriptorCount = 1;
+            shadowWrites[1].pBufferInfo = &shadowLightBufferInfo;
 
-        std::array<VkDescriptorImageInfo, 4> compImageInfos{};
+            shadowWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            shadowWrites[2].dstSet = m_shadowDescriptorSets[i][m];
+            shadowWrites[2].dstBinding = 2;
+            shadowWrites[2].dstArrayElement = 0;
+            shadowWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            shadowWrites[2].descriptorCount = 1;
+            shadowWrites[2].pImageInfo = &shadowAlphaImageInfo;
+
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(shadowWrites.size()), shadowWrites.data(), 0, nullptr);
+        }
+
+        std::array<VkDescriptorImageInfo, 5> compImageInfos{};
         compImageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         compImageInfos[0].imageView = m_positionImageView;
         compImageInfos[0].sampler = m_colorSampler;
@@ -1263,13 +1366,17 @@ void DeferredRenderer::createDescriptorSets()
         compImageInfos[3].imageView = m_shadowImageView;
         compImageInfos[3].sampler = m_shadowSampler;
 
+        compImageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        compImageInfos[4].imageView = m_specularImageView;
+        compImageInfos[4].sampler = m_colorSampler;
+
         VkDescriptorBufferInfo compLightBufferInfo{};
         compLightBufferInfo.buffer = m_lightBuffers[i];
         compLightBufferInfo.offset = 0;
         compLightBufferInfo.range = sizeof(LightBufferObject);
 
-        std::array<VkWriteDescriptorSet, 5> compWrites{};
-        for (uint32_t b = 0; b < 4; b++)
+        std::array<VkWriteDescriptorSet, 6> compWrites{};
+        for (uint32_t b = 0; b < 5; b++)
         {
             compWrites[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             compWrites[b].dstSet = m_compositionDescriptorSets[i];
@@ -1280,13 +1387,13 @@ void DeferredRenderer::createDescriptorSets()
             compWrites[b].pImageInfo = &compImageInfos[b];
         }
 
-        compWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        compWrites[4].dstSet = m_compositionDescriptorSets[i];
-        compWrites[4].dstBinding = 4;
-        compWrites[4].dstArrayElement = 0;
-        compWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        compWrites[4].descriptorCount = 1;
-        compWrites[4].pBufferInfo = &compLightBufferInfo;
+        compWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        compWrites[5].dstSet = m_compositionDescriptorSets[i];
+        compWrites[5].dstBinding = 5;
+        compWrites[5].dstArrayElement = 0;
+        compWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        compWrites[5].descriptorCount = 1;
+        compWrites[5].pBufferInfo = &compLightBufferInfo;
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(compWrites.size()), compWrites.data(), 0, nullptr);
     }
@@ -1359,6 +1466,10 @@ void DeferredRenderer::Recreate()
     vkDestroyImage(device, m_albedoImage, nullptr);
     vkFreeMemory(device, m_albedoImageMemory, nullptr);
 
+    vkDestroyImageView(device, m_specularImageView, nullptr);
+    vkDestroyImage(device, m_specularImage, nullptr);
+    vkFreeMemory(device, m_specularImageMemory, nullptr);
+
     vkDestroyImageView(device, m_depthImageView, nullptr);
     vkDestroyImage(device, m_depthImage, nullptr);
     vkFreeMemory(device, m_depthImageMemory, nullptr);
@@ -1368,7 +1479,7 @@ void DeferredRenderer::Recreate()
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        std::array<VkDescriptorImageInfo, 4> compImageInfos{};
+        std::array<VkDescriptorImageInfo, 5> compImageInfos{};
         compImageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         compImageInfos[0].imageView = m_positionImageView;
         compImageInfos[0].sampler = m_colorSampler;
@@ -1385,8 +1496,12 @@ void DeferredRenderer::Recreate()
         compImageInfos[3].imageView = m_shadowImageView;
         compImageInfos[3].sampler = m_shadowSampler;
 
-        std::array<VkWriteDescriptorSet, 4> compWrites{};
-        for (uint32_t b = 0; b < 4; b++)
+        compImageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        compImageInfos[4].imageView = m_specularImageView;
+        compImageInfos[4].sampler = m_colorSampler;
+
+        std::array<VkWriteDescriptorSet, 5> compWrites{};
+        for (uint32_t b = 0; b < 5; b++)
         {
             compWrites[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             compWrites[b].dstSet = m_compositionDescriptorSets[i];
@@ -1732,11 +1847,30 @@ void DeferredRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1, &m_shadowDescriptorSets[m_currentFrame], 0, nullptr);
 
         if (m_model)
         {
-            m_model->Draw(commandBuffer, m_shadowPipelineLayout);
+            VkBuffer vertexBuffers[] = {m_model->GetVertexBuffer()};
+            VkDeviceSize offsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, m_model->GetIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+
+            const auto &subMeshes = m_model->GetSubMeshes();
+            const auto &descSets = m_shadowDescriptorSets[m_currentFrame];
+
+            for (const auto &subMesh : subMeshes)
+            {
+                int matIdx = subMesh.materialIndex;
+                if (matIdx < 0 || matIdx >= (int)descSets.size())
+                {
+                    matIdx = 0;
+                }
+                if (!descSets.empty())
+                {
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1, &descSets[matIdx], 0, nullptr);
+                }
+                vkCmdDrawIndexed(commandBuffer, subMesh.indexCount, 1, subMesh.indexStart, 0, 0);
+            }
         }
     }
     vkCmdEndRenderPass(commandBuffer);
@@ -1748,11 +1882,12 @@ void DeferredRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32
     geomPassInfo.renderArea.offset = {0, 0};
     geomPassInfo.renderArea.extent = extent;
 
-    std::array<VkClearValue, 4> geomClearValues{};
+    std::array<VkClearValue, 5> geomClearValues{};
     geomClearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     geomClearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     geomClearValues[2].color = {{0.1f, 0.1f, 0.15f, 1.0f}};
-    geomClearValues[3].depthStencil = {1.0f, 0};
+    geomClearValues[3].color = {{1.0f, 1.0f, 1.0f, 1.0f}};
+    geomClearValues[4].depthStencil = {1.0f, 0};
 
     geomPassInfo.clearValueCount = static_cast<uint32_t>(geomClearValues.size());
     geomPassInfo.pClearValues = geomClearValues.data();

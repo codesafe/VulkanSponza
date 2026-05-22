@@ -31,6 +31,12 @@ struct Material
     VkImage normalImage;
     VkDeviceMemory normalImageMemory;
     VkImageView normalImageView;
+    VkImage alphaImage;
+    VkDeviceMemory alphaImageMemory;
+    VkImageView alphaImageView;
+    VkImage specularImage;
+    VkDeviceMemory specularImageMemory;
+    VkImageView specularImageView;
 };
 
 struct SubMesh
