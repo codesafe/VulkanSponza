@@ -45,8 +45,8 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>D:\private\vulkansdk\Include;$(ProjectDir)vendor;$(ProjectDir)imgui;$(IncludePath)</IncludePath>
-    <LibraryPath>D:\private\vulkansdk\Lib;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(VK_SDK_PATH)\Include;$(ProjectDir)vendor;$(ProjectDir)imgui;$(IncludePath)</IncludePath>
+    <LibraryPath>$(VK_SDK_PATH)\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
