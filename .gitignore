@@ -1,7 +1,6 @@
 ### C
 # Object files
 *.o
-*.obj
 *.elf
 
 # Precompiled Headers
@@ -35,7 +34,6 @@
 ### C++
 # Object files
 *.o
-*.obj
 
 # Precompiled Headers
 *.gch
