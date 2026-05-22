@@ -18,22 +18,34 @@ light;
 
 layout(location = 0) out vec4 outColor;
 
-float ShadowCalculation(vec4 fragPosLightSpace)
+float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir)
 {
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
     // Vulkan Z는 0에서 1이고, Y는 아래쪽이다.
     projCoords.xy = projCoords.xy * 0.5 + 0.5;
 
-    if (projCoords.z > 1.0 || projCoords.z < 0.0)
+    if (projCoords.x < 0.0 || projCoords.x > 1.0 ||
+        projCoords.y < 0.0 || projCoords.y > 1.0 ||
+        projCoords.z > 1.0 || projCoords.z < 0.0)
+    {
         return 0.0;
+    }
 
-    float closestDepth = texture(shadowMapSampler, projCoords.xy).r;
     float currentDepth = projCoords.z;
+    float bias = max(0.0015 * (1.0 - dot(normalize(normal), normalize(lightDir))), 0.0004);
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMapSampler, 0));
+    float shadow = 0.0;
 
-    float bias = max(0.05 * (1.0 - dot(vec3(0, 1, 0), light.lightDirAndAmbient.xyz)), 0.005);
-    float shadow = currentDepth - bias > closestDepth ? 1.0 : 0.0;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            float closestDepth = texture(shadowMapSampler, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > closestDepth ? 1.0 : 0.0;
+        }
+    }
 
-    return shadow;
+    return shadow / 9.0;
 }
 
 void main()
@@ -67,7 +79,7 @@ void main()
 
     // 그림자
     vec4 fragPosLightSpace = light.lightSpaceMatrix * vec4(fragPos, 1.0);
-    float shadow = ShadowCalculation(fragPosLightSpace);
+    float shadow = ShadowCalculation(fragPosLightSpace, normal, lightDir);
 
     vec3 lighting = ambient + (1.0 - shadow) * (diffuse + specular);
     outColor = vec4(lighting, 1.0);

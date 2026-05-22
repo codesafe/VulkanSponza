@@ -10,8 +10,9 @@ ubo;
 
 layout(binding = 1) uniform LightBufferObject
 {
-    vec3 lightDir;
-    vec3 viewPos;
+    vec4 lightDirAndAmbient;
+    vec4 viewPosAndSpecular;
+    vec4 lightColorAndSpecPower;
     mat4 lightSpaceMatrix;
 }
 light;

@@ -1,11 +1,15 @@
 #version 450
 
+layout(early_fragment_tests) in;
+
 layout(location = 0) in vec3 fragPos;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragTexCoord;
+layout(location = 3) in vec3 fragTangent;
+layout(location = 4) in vec3 fragBitangent;
 
-// 바인딩 0은 UBO
-layout(binding = 1) uniform sampler2D texSampler;
+layout(binding = 1) uniform sampler2D diffuseSampler;
+layout(binding = 2) uniform sampler2D normalSampler;
 
 layout(location = 0) out vec4 outPosition;
 layout(location = 1) out vec4 outNormal;
@@ -13,7 +17,14 @@ layout(location = 2) out vec4 outAlbedo;
 
 void main()
 {
+    vec3 vertexNormal = normalize(fragNormal);
+    vec3 tangent = normalize(fragTangent - vertexNormal * dot(vertexNormal, fragTangent));
+    float handedness = dot(cross(vertexNormal, tangent), fragBitangent) < 0.0 ? -1.0 : 1.0;
+    vec3 bitangent = normalize(cross(vertexNormal, tangent)) * handedness;
+    vec3 tangentNormal = texture(normalSampler, fragTexCoord).xyz * 2.0 - 1.0;
+    vec3 finalNormal = normalize(mat3(tangent, bitangent, vertexNormal) * tangentNormal);
+
     outPosition = vec4(fragPos, 1.0);
-    outNormal = vec4(normalize(fragNormal), 1.0);
-    outAlbedo = texture(texSampler, fragTexCoord);
+    outNormal = vec4(finalNormal, 1.0);
+    outAlbedo = texture(diffuseSampler, fragTexCoord);
 }

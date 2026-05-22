@@ -21,7 +21,7 @@ VkVertexInputBindingDescription Vertex::getBindingDescription()
 
 std::vector<VkVertexInputAttributeDescription> Vertex::getAttributeDescriptions()
 {
-    std::vector<VkVertexInputAttributeDescription> attributeDescriptions(3);
+    std::vector<VkVertexInputAttributeDescription> attributeDescriptions(5);
 
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
@@ -37,6 +37,16 @@ std::vector<VkVertexInputAttributeDescription> Vertex::getAttributeDescriptions(
     attributeDescriptions[2].location = 2;
     attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
     attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
+
+    attributeDescriptions[3].binding = 0;
+    attributeDescriptions[3].location = 3;
+    attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[3].offset = offsetof(Vertex, tangent);
+
+    attributeDescriptions[4].binding = 0;
+    attributeDescriptions[4].location = 4;
+    attributeDescriptions[4].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[4].offset = offsetof(Vertex, bitangent);
 
     return attributeDescriptions;
 }
@@ -63,6 +73,9 @@ Model::~Model()
         vkDestroyImageView(m_context->GetDevice(), material.diffuseImageView, nullptr);
         vkDestroyImage(m_context->GetDevice(), material.diffuseImage, nullptr);
         vkFreeMemory(m_context->GetDevice(), material.diffuseImageMemory, nullptr);
+        vkDestroyImageView(m_context->GetDevice(), material.normalImageView, nullptr);
+        vkDestroyImage(m_context->GetDevice(), material.normalImage, nullptr);
+        vkFreeMemory(m_context->GetDevice(), material.normalImageMemory, nullptr);
     }
 }
 
@@ -135,6 +148,68 @@ void Model::loadModel(const std::string &path)
         {
             m_subMeshes.push_back(subMesh);
         }
+    }
+
+    calculateTangents();
+}
+
+void Model::calculateTangents()
+{
+    for (auto &vertex : m_vertices)
+    {
+        vertex.tangent = Math::Vec3(0.0f);
+        vertex.bitangent = Math::Vec3(0.0f);
+    }
+
+    for (size_t i = 0; i + 2 < m_indices.size(); i += 3)
+    {
+        Vertex &v0 = m_vertices[m_indices[i]];
+        Vertex &v1 = m_vertices[m_indices[i + 1]];
+        Vertex &v2 = m_vertices[m_indices[i + 2]];
+
+        Math::Vec3 edge1 = v1.pos - v0.pos;
+        Math::Vec3 edge2 = v2.pos - v0.pos;
+        float deltaU1 = v1.texCoord.x - v0.texCoord.x;
+        float deltaV1 = v1.texCoord.y - v0.texCoord.y;
+        float deltaU2 = v2.texCoord.x - v0.texCoord.x;
+        float deltaV2 = v2.texCoord.y - v0.texCoord.y;
+        float determinant = deltaU1 * deltaV2 - deltaU2 * deltaV1;
+
+        if (std::abs(determinant) < 0.000001f)
+        {
+            continue;
+        }
+
+        float invDeterminant = 1.0f / determinant;
+        Math::Vec3 tangent = (edge1 * deltaV2 - edge2 * deltaV1) * invDeterminant;
+        Math::Vec3 bitangent = (edge2 * deltaU1 - edge1 * deltaU2) * invDeterminant;
+
+        v0.tangent += tangent;
+        v1.tangent += tangent;
+        v2.tangent += tangent;
+        v0.bitangent += bitangent;
+        v1.bitangent += bitangent;
+        v2.bitangent += bitangent;
+    }
+
+    for (auto &vertex : m_vertices)
+    {
+        Math::Vec3 normal = vertex.normal.Normalize();
+        Math::Vec3 tangent = vertex.tangent - normal * Math::Vec3::Dot(normal, vertex.tangent);
+        if (Math::Vec3::Dot(tangent, tangent) < 0.000001f)
+        {
+            tangent = Math::Vec3(1.0f, 0.0f, 0.0f);
+        }
+
+        tangent = tangent.Normalize();
+        Math::Vec3 bitangent = Math::Vec3::Cross(normal, tangent);
+        if (Math::Vec3::Dot(bitangent, vertex.bitangent) < 0.0f)
+        {
+            bitangent = bitangent * -1.0f;
+        }
+
+        vertex.tangent = tangent;
+        vertex.bitangent = bitangent.Normalize();
     }
 }
 
@@ -232,15 +307,20 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
     for (size_t i = 0; i < materials.size(); i++)
     {
         const auto &mat = materials[i];
-        std::string texturePath = "";
-
-        if (!mat.diffuse_texname.empty())
+        auto resolveTexturePath = [&](const std::string &textureName) -> std::string
         {
-            texturePath = baseDir + mat.diffuse_texname;
+            if (textureName.empty())
+            {
+                return "";
+            }
+
+            std::string texturePath = baseDir + textureName;
             for (auto &c : texturePath)
             {
                 if (c == '\\')
+                {
                     c = '/';
+                }
             }
 
             if (!std::filesystem::exists(texturePath))
@@ -268,15 +348,18 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
                     }
                 }
             }
-        }
+
+            return texturePath;
+        };
 
         bool loaded = false;
+        std::string texturePath = resolveTexturePath(mat.diffuse_texname);
         if (!texturePath.empty())
         {
             try
             {
-                loadTexture(texturePath, m_materials[i].diffuseImage, m_materials[i].diffuseImageMemory);
-                m_materials[i].diffuseImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].diffuseImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                loadTexture(texturePath, VK_FORMAT_R8G8B8A8_SRGB, m_materials[i].diffuseImage, m_materials[i].diffuseImageMemory);
+                m_materials[i].diffuseImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].diffuseImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
                 loaded = true;
                 std::cout << "Loaded material texture [" << i << "]: " << texturePath << std::endl;
             }
@@ -288,19 +371,42 @@ void Model::loadMaterials(const std::string &baseDir, const std::vector<tinyobj:
 
         if (!loaded)
         {
-            createFallbackTexture(m_materials[i].diffuseImage, m_materials[i].diffuseImageMemory, m_materials[i].diffuseImageView);
+            createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_SRGB, m_materials[i].diffuseImage, m_materials[i].diffuseImageMemory, m_materials[i].diffuseImageView);
+        }
+
+        bool normalLoaded = false;
+        std::string normalTexturePath = resolveTexturePath(!mat.normal_texname.empty() ? mat.normal_texname : (!mat.bump_texname.empty() ? mat.bump_texname : mat.displacement_texname));
+        if (!normalTexturePath.empty())
+        {
+            try
+            {
+                loadTexture(normalTexturePath, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].normalImage, m_materials[i].normalImageMemory);
+                m_materials[i].normalImageView = VulkanUtils::CreateImageView(m_context, m_materials[i].normalImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+                normalLoaded = true;
+                std::cout << "Loaded normal texture [" << i << "]: " << normalTexturePath << std::endl;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Failed to load normal texture " << normalTexturePath << ": " << e.what() << ". Using fallback flat normal texture." << std::endl;
+            }
+        }
+
+        if (!normalLoaded)
+        {
+            createFallbackTexture(0xFFFF8080, VK_FORMAT_R8G8B8A8_UNORM, m_materials[i].normalImage, m_materials[i].normalImageMemory, m_materials[i].normalImageView);
         }
     }
 
     if (m_materials.empty())
     {
         Material fallback{};
-        createFallbackTexture(fallback.diffuseImage, fallback.diffuseImageMemory, fallback.diffuseImageView);
+        createFallbackTexture(0xFFFFFFFF, VK_FORMAT_R8G8B8A8_SRGB, fallback.diffuseImage, fallback.diffuseImageMemory, fallback.diffuseImageView);
+        createFallbackTexture(0xFFFF8080, VK_FORMAT_R8G8B8A8_UNORM, fallback.normalImage, fallback.normalImageMemory, fallback.normalImageView);
         m_materials.push_back(fallback);
     }
 }
 
-void Model::loadTexture(const std::string &filename, VkImage &textureImage, VkDeviceMemory &textureImageMemory)
+void Model::loadTexture(const std::string &filename, VkFormat format, VkImage &textureImage, VkDeviceMemory &textureImageMemory)
 {
     int texWidth, texHeight, texChannels;
     stbi_uc *pixels = stbi_load(filename.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
@@ -322,9 +428,9 @@ void Model::loadTexture(const std::string &filename, VkImage &textureImage, VkDe
 
     stbi_image_free(pixels);
 
-    VulkanUtils::CreateImage(m_context, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+    VulkanUtils::CreateImage(m_context, texWidth, texHeight, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
 
-    transitionImageLayout(m_context, textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImageLayout(m_context, textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkCommandBuffer commandBuffer = VulkanUtils::BeginSingleTimeCommands(m_context);
     VkBufferImageCopy region{};
@@ -341,27 +447,26 @@ void Model::loadTexture(const std::string &filename, VkImage &textureImage, VkDe
     vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     VulkanUtils::EndSingleTimeCommands(m_context, commandBuffer);
 
-    transitionImageLayout(m_context, textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImageLayout(m_context, textureImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     vkDestroyBuffer(m_context->GetDevice(), stagingBuffer, nullptr);
     vkFreeMemory(m_context->GetDevice(), stagingBufferMemory, nullptr);
 }
 
-void Model::createFallbackTexture(VkImage &textureImage, VkDeviceMemory &textureImageMemory, VkImageView &textureImageView)
+void Model::createFallbackTexture(uint32_t pixel, VkFormat format, VkImage &textureImage, VkDeviceMemory &textureImageMemory, VkImageView &textureImageView)
 {
-    uint32_t whitePixel = 0xFFFFFFFF;
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
     VulkanUtils::CreateBuffer(m_context, 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
 
     void *data;
     vkMapMemory(m_context->GetDevice(), stagingBufferMemory, 0, 4, 0, &data);
-    memcpy(data, &whitePixel, 4);
+    memcpy(data, &pixel, 4);
     vkUnmapMemory(m_context->GetDevice(), stagingBufferMemory);
 
-    VulkanUtils::CreateImage(m_context, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+    VulkanUtils::CreateImage(m_context, 1, 1, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
 
-    transitionImageLayout(m_context, textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImageLayout(m_context, textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkCommandBuffer commandBuffer = VulkanUtils::BeginSingleTimeCommands(m_context);
     VkBufferImageCopy region{};
@@ -378,12 +483,12 @@ void Model::createFallbackTexture(VkImage &textureImage, VkDeviceMemory &texture
     vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     VulkanUtils::EndSingleTimeCommands(m_context, commandBuffer);
 
-    transitionImageLayout(m_context, textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImageLayout(m_context, textureImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     vkDestroyBuffer(m_context->GetDevice(), stagingBuffer, nullptr);
     vkFreeMemory(m_context->GetDevice(), stagingBufferMemory, nullptr);
 
-    textureImageView = VulkanUtils::CreateImageView(m_context, textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+    textureImageView = VulkanUtils::CreateImageView(m_context, textureImage, format, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 void Model::transitionImageLayout(VulkanContext *context, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)

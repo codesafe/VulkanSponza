@@ -216,9 +216,9 @@ void DeferredRenderer::Init(Model *model, HWND hwnd, RenderConfig *config)
     memcpy(data, &whitePixel, 4);
     vkUnmapMemory(m_context->GetDevice(), stagingBufferMemory);
 
-    VulkanUtils::CreateImage(m_context, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_defaultTextureImage, m_defaultTextureImageMemory);
+    VulkanUtils::CreateImage(m_context, 1, 1, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_defaultTextureImage, m_defaultTextureImageMemory);
 
-    transitionImageLayout(m_context, m_defaultTextureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImageLayout(m_context, m_defaultTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkCommandBuffer commandBuffer = VulkanUtils::BeginSingleTimeCommands(m_context);
     VkBufferImageCopy region{};
@@ -235,12 +235,12 @@ void DeferredRenderer::Init(Model *model, HWND hwnd, RenderConfig *config)
     vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, m_defaultTextureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     VulkanUtils::EndSingleTimeCommands(m_context, commandBuffer);
 
-    transitionImageLayout(m_context, m_defaultTextureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImageLayout(m_context, m_defaultTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     vkDestroyBuffer(m_context->GetDevice(), stagingBuffer, nullptr);
     vkFreeMemory(m_context->GetDevice(), stagingBufferMemory, nullptr);
 
-    m_defaultTextureImageView = VulkanUtils::CreateImageView(m_context, m_defaultTextureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+    m_defaultTextureImageView = VulkanUtils::CreateImageView(m_context, m_defaultTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
     createGBuffer();
     createShadowMap();
@@ -302,10 +302,10 @@ void DeferredRenderer::createGBuffer()
     m_normalImageView = VulkanUtils::CreateImageView(m_context, m_normalImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
 
     VulkanUtils::CreateImage(m_context, extent.width, extent.height,
-                             VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                             VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_albedoImage, m_albedoImageMemory);
-    m_albedoImageView = VulkanUtils::CreateImageView(m_context, m_albedoImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+    m_albedoImageView = VulkanUtils::CreateImageView(m_context, m_albedoImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
     VulkanUtils::CreateImage(m_context, extent.width, extent.height,
                              VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
@@ -347,8 +347,8 @@ void DeferredRenderer::createShadowMap()
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
@@ -358,7 +358,7 @@ void DeferredRenderer::createShadowMap()
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
     if (vkCreateSampler(m_context->GetDevice(), &samplerInfo, nullptr, &m_shadowSampler) != VK_SUCCESS)
     {
@@ -502,7 +502,7 @@ void DeferredRenderer::createRenderPasses()
     attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    attachments[2].format = VK_FORMAT_R8G8B8A8_UNORM;
+    attachments[2].format = VK_FORMAT_R8G8B8A8_SRGB;
     attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;
     attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -625,14 +625,21 @@ void DeferredRenderer::createDescriptorSetLayouts()
     uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     uboLayoutBinding.pImmutableSamplers = nullptr;
 
-    VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-    samplerLayoutBinding.binding = 1;
-    samplerLayoutBinding.descriptorCount = 1;
-    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    samplerLayoutBinding.pImmutableSamplers = nullptr;
-    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutBinding diffuseSamplerLayoutBinding{};
+    diffuseSamplerLayoutBinding.binding = 1;
+    diffuseSamplerLayoutBinding.descriptorCount = 1;
+    diffuseSamplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    diffuseSamplerLayoutBinding.pImmutableSamplers = nullptr;
+    diffuseSamplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 2> geomBindings = {uboLayoutBinding, samplerLayoutBinding};
+    VkDescriptorSetLayoutBinding normalSamplerLayoutBinding{};
+    normalSamplerLayoutBinding.binding = 2;
+    normalSamplerLayoutBinding.descriptorCount = 1;
+    normalSamplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    normalSamplerLayoutBinding.pImmutableSamplers = nullptr;
+    normalSamplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 3> geomBindings = {uboLayoutBinding, diffuseSamplerLayoutBinding, normalSamplerLayoutBinding};
     VkDescriptorSetLayoutCreateInfo geomLayoutInfo{};
     geomLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     geomLayoutInfo.bindingCount = static_cast<uint32_t>(geomBindings.size());
@@ -738,13 +745,14 @@ void DeferredRenderer::createPipelines()
 
     auto bindingDesc = Vertex::getBindingDescription();
     auto attribDescs = Vertex::getAttributeDescriptions();
+    VkVertexInputAttributeDescription shadowPositionAttribDesc = attribDescs[0];
 
     VkPipelineVertexInputStateCreateInfo shadowVertexInputInfo{};
     shadowVertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     shadowVertexInputInfo.vertexBindingDescriptionCount = 1;
     shadowVertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
-    shadowVertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attribDescs.size());
-    shadowVertexInputInfo.pVertexAttributeDescriptions = attribDescs.data();
+    shadowVertexInputInfo.vertexAttributeDescriptionCount = 1;
+    shadowVertexInputInfo.pVertexAttributeDescriptions = &shadowPositionAttribDesc;
 
     VkPipelineInputAssemblyStateCreateInfo shadowInputAssembly{};
     shadowInputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -779,9 +787,9 @@ void DeferredRenderer::createPipelines()
     shadowRasterizer.cullMode = VK_CULL_MODE_NONE;
     shadowRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     shadowRasterizer.depthBiasEnable = VK_TRUE;
-    shadowRasterizer.depthBiasConstantFactor = 1.25f;
+    shadowRasterizer.depthBiasConstantFactor = 0.5f;
     shadowRasterizer.depthBiasClamp = 0.0f;
-    shadowRasterizer.depthBiasSlopeFactor = 1.75f;
+    shadowRasterizer.depthBiasSlopeFactor = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo shadowMultisampling{};
     shadowMultisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1161,20 +1169,27 @@ void DeferredRenderer::createDescriptorSets()
             geomBufferInfo.offset = 0;
             geomBufferInfo.range = sizeof(UniformBufferObject);
 
-            VkDescriptorImageInfo geomImageInfo{};
-            geomImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo geomDiffuseImageInfo{};
+            geomDiffuseImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo geomNormalImageInfo{};
+            geomNormalImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             if (m < modelMaterials.size())
             {
-                geomImageInfo.imageView = modelMaterials[m].diffuseImageView;
-                geomImageInfo.sampler = m_model->GetTextureSampler();
+                geomDiffuseImageInfo.imageView = modelMaterials[m].diffuseImageView;
+                geomDiffuseImageInfo.sampler = m_model->GetTextureSampler();
+                geomNormalImageInfo.imageView = modelMaterials[m].normalImageView;
+                geomNormalImageInfo.sampler = m_model->GetTextureSampler();
             }
             else
             {
-                geomImageInfo.imageView = m_defaultTextureImageView;
-                geomImageInfo.sampler = m_colorSampler;
+                geomDiffuseImageInfo.imageView = m_defaultTextureImageView;
+                geomDiffuseImageInfo.sampler = m_colorSampler;
+                geomNormalImageInfo.imageView = m_defaultTextureImageView;
+                geomNormalImageInfo.sampler = m_colorSampler;
             }
 
-            std::array<VkWriteDescriptorSet, 2> geomWrites{};
+            std::array<VkWriteDescriptorSet, 3> geomWrites{};
             geomWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             geomWrites[0].dstSet = m_geometryDescriptorSets[i][m];
             geomWrites[0].dstBinding = 0;
@@ -1189,7 +1204,15 @@ void DeferredRenderer::createDescriptorSets()
             geomWrites[1].dstArrayElement = 0;
             geomWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             geomWrites[1].descriptorCount = 1;
-            geomWrites[1].pImageInfo = &geomImageInfo;
+            geomWrites[1].pImageInfo = &geomDiffuseImageInfo;
+
+            geomWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            geomWrites[2].dstSet = m_geometryDescriptorSets[i][m];
+            geomWrites[2].dstBinding = 2;
+            geomWrites[2].dstArrayElement = 0;
+            geomWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            geomWrites[2].descriptorCount = 1;
+            geomWrites[2].pImageInfo = &geomNormalImageInfo;
 
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(geomWrites.size()), geomWrites.data(), 0, nullptr);
         }
